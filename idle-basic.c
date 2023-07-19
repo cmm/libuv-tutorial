@@ -2,29 +2,25 @@
 #include <uv.h>
 #include "co.h"
 
-co_define(
-    idler, (), int,
-    {
-      int64_t counter;
-      uv_idle_t idler;
-    },
-    {
-      co_prologue;
-      vars->counter = 0;
-      uv_idle_init(_co->loop, &vars->idler);
-      uv_await0(idle_start, &vars->idler);
-      do {
-        printf("c=%lu\n", vars->counter);
-      } while (++vars->counter < 10);
-      uv_idle_stop(&vars->idler);
-      co_epilogue(0);
-    });
+co_define(idle, uv_idle_t *, int, int64_t, NULL);
+void idle_co(co_base_t *co) {
+  co_prologue(idle, co);
+  *state = 0;
+  uv_idle_init(co->loop, *in);
+  do {
+    uv_await0(idle_start, *in);
+    printf("c=%lu\n", *state);
+    uv_idle_stop(*in);
+  } while (++*state < 10);
+  co_epilogue(0);
+}
 
 int main() {
-  co_t idle_co;
+  uv_idle_t idler;
+  __auto_type loop = uv_default_loop();
   printf("Idling...\n");
-  co_launch(&idle_co, uv_default_loop(), idler);
-  uv_run(uv_default_loop(), UV_RUN_DEFAULT);
-  uv_loop_close(uv_default_loop());
+  co_launch(loop, NULL, idle, &idler);
+  uv_run(loop, UV_RUN_DEFAULT);
+  uv_loop_close(loop);
   return 0;
 }
