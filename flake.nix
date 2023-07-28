@@ -31,6 +31,7 @@
       buildInputs = attrValues {
         inherit (pkgs)
           libuv
+          curl
         ;
       };
     };
