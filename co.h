@@ -490,9 +490,9 @@ int _co_uv__idle(uv_loop_t *, uv_idle_t *idle, uv_idle_cb cb) {
 #define _co_uv_type__idle idle
 
 // FIXME uv asyncs do not look amenable to coroutinization.
-/* _co_define_uv(async, uv_async_t *, handle); */
-/* #define _co_uv__async_init uv_async_init */
-/* #define _co_uv__async_type async */
+_co_define_uv(async, uv_async_t *, handle);
+#define _co_uv__async_init uv_async_init
+#define _co_uv_type__async_init async
 
 _co_define_uv(timer, uv_timer_t *, handle);
 _co_uv_wrapper(timer)(uv_loop_t *, uv_timer_t *handle, uint64_t timeout,
