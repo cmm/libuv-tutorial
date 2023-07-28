@@ -182,7 +182,13 @@ int _co_cancel(void *co_) {
     if (_co->public.base.cleanup_fn)                                           \
       _co->public.base.cleanup_fn(&_co->public.base);                          \
     free(_co);                                                                 \
+    _co_returning_properly = true;                                             \
   } while (false)
+
+static void __attribute__((unused))
+_co_check_proper_return(bool *co_returning_properly) {
+  if (!*co_returning_properly) abort();
+}
 
 #define co_return(OUT)                                                         \
   do {                                                                         \
@@ -214,6 +220,8 @@ int _co_cancel(void *co_) {
 #define co_prologue(NAME, CO, IN_VAR, STATE_VAR)                               \
   if (strcmp(__func__, #NAME "_co"))                                           \
     abort();                                                                   \
+  __attribute__((cleanup(_co_check_proper_return))) bool                       \
+  _co_returning_properly = false;                                              \
   co_bind(NAME, CO, IN_VAR, STATE_VAR);                                        \
   int __attribute__((unused)) co_errno = 0;                                    \
   switch (_co->public.base.line) {                                             \
@@ -236,6 +244,7 @@ int _co_cancel(void *co_) {
     _co->public.base.np_base->ready = false;                                   \
     _co->public.base.line = __LINE__;                                          \
     co_launch(_co->public.base.loop, _co->public.base.np_base, NAME, IN);      \
+    _co_returning_properly = true;                                             \
     return;                                                                    \
   case __LINE__:;                                                              \
   } while (false)
@@ -313,6 +322,7 @@ int _co_cancel(void *co_) {
                               ##__VA_ARGS__, uv_##TYPE##__cb);                 \
     if (co_errno == 0) {                                                       \
       /* all good, uv will call us back */                                     \
+      _co_returning_properly = true;                                           \
       return;                                                                  \
     }                                                                          \
   case __LINE__:;                                                              \
