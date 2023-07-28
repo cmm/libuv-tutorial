@@ -7,79 +7,75 @@
 
 uv_loop_t *loop;
 
-void echo_read(uv_stream_t *server, ssize_t nread, const uv_buf_t* buf) {
-    if (nread == -1) {
-        fprintf(stderr, "error echo_read");
-        return;
+typedef struct {
+  struct addrinfo hints;
+  uv_getaddrinfo_t resolver;
+  char addr[17];
+  uv_connect_t connect_req;
+  uv_tcp_t socket;
+  char buffer[32];
+  uv_buf_t w_buf;
+  uv_write_t write_req;
+  uv_stream_t *stream;
+} state_t;
+co_define(foo, co_none_t, co_none_t, state_t, NULL);
+void foo_co(co_base_t *co) {
+  co_prologue(foo, co, _, state);
+  state->hints = (typeof(state->hints)){
+    .ai_family = PF_INET,
+    .ai_socktype = SOCK_STREAM,
+    .ai_protocol = IPPROTO_TCP,
+    .ai_flags = 0
+  };
+  fprintf(stderr, "irc.freenode.net is ");
+  uv_await(ret, getaddrinfo, &state->resolver, "irc.freenode.net", "6667", &state->hints);
+  if (co_errno) {
+    fprintf(stderr, "getaddrinfo call error %s\n", uv_err_name(co_errno));
+    co_return({});
+  }
+  if (ret->status < 0) {
+    fprintf(stderr, "getaddrinfo error %s\n", uv_err_name(ret->status));
+    co_return({});
+  }
+  uv_ip4_name((struct sockaddr_in*)ret->res->ai_addr, state->addr, 16);
+  fprintf(stderr, "%s\n", state->addr);
+  uv_tcp_init(co->loop, &state->socket);
+  __auto_type ai_addr = (const struct sockaddr*)ret->res->ai_addr;
+  uv_await(c, tcp_connect, &state->connect_req, &state->socket, ai_addr);
+  if (c->status < 0) {
+    fprintf(stderr, "connect error\n");
+    co_return({});
+  }
+  static char msg[] = "hello";
+  state->w_buf = (uv_buf_t){.len = strlen(msg), .base = msg};
+  __auto_type tcp = (uv_stream_t *)c->req->handle;
+  uv_await(w, write, &state->write_req, tcp, &state->w_buf, 1);
+  if (w->status < 0) {
+    fprintf(stderr, "write error");
+    co_return({});
+  }
+  state->stream = w->req->handle;
+  while (true) {
+    uv_await(r, read, state->stream, (uv_buf_t){.len = sizeof(state->buffer) - 1, .base = state->buffer});
+    if (r->nread == UV_EOF) {
+      printf("\n");
+      break;
     }
-
-    printf("result: %s\n", buf->base);
-}
-
-void alloc_buffer(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
-    buf->base = malloc(suggested_size);
-    buf->len = suggested_size;
-}
-
-void on_write_end(uv_write_t *req, int status) {
-    if (status == -1) {
-        fprintf(stderr, "error on_write_end");
-        return;
+    if (r->nread < 0) {
+      fprintf(stderr, "read error");
+      co_return({});
     }
-    uv_read_start(req->handle, alloc_buffer, echo_read);
-}
+    r->buf->base[r->nread] = '\0';
+    printf("%s", r->buf->base);
+  }
 
-void on_connect(uv_connect_t * req, int status) {
-    if (status == -1) {
-        fprintf(stderr, "error on_write_end");
-        return;
-    }
-    char buffer[100];
-    uv_buf_t buf = uv_buf_init(buffer, sizeof(buffer));
-    char *message = "hello";
-    buf.len = strlen(message);
-    buf.base = message;
-    uv_stream_t *tcp = req->handle;
-    uv_write_t write_req;
-    int buf_count = 1;
-    uv_write(&write_req, tcp, &buf, buf_count, on_write_end);
-}
-
-void on_resolved(uv_getaddrinfo_t *resolver, int status, struct addrinfo *res) {
-    if (status < 0) {
-        fprintf(stderr, "getaddrinfo callback error %s\n", uv_err_name(status));
-        return;
-    }
-
-    char addr[17] = {'\0'};
-    uv_ip4_name((struct sockaddr_in*)res->ai_addr, addr, 16);
-    fprintf(stderr, "%s\n", addr);
-
-    uv_connect_t *connect_req = (uv_connect_t*) malloc(sizeof(uv_connect_t));
-    uv_tcp_t *socket = (uv_tcp_t*) malloc(sizeof(uv_tcp_t));
-    uv_tcp_init(loop, socket);
-
-    uv_tcp_connect(connect_req, socket, (const struct sockaddr*) res->ai_addr, on_connect);
-
-    uv_freeaddrinfo(res);
+  uv_await0(close, (uv_handle_t *)state->stream);
+  co_epilogue({});
 }
 
 int main() {
-    loop = uv_default_loop();
+  loop = uv_default_loop();
 
-    struct addrinfo hints;
-    hints.ai_family = PF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-    hints.ai_flags = 0;
-
-    uv_getaddrinfo_t resolver;
-    fprintf(stderr, "irc.freenode.net is");
-    int r = uv_getaddrinfo(loop, &resolver, on_resolved, "irc.freenode.net", "6667", &hints);
-
-    if (r) {
-        fprintf(stderr, "getaddrinfo call error %s\n", uv_err_name(r));
-        return 1;
-    }
-    return uv_run(loop, UV_RUN_DEFAULT);
+  co_launch(loop, NULL, foo, {});
+  return uv_run(loop, UV_RUN_DEFAULT);
 }

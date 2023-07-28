@@ -335,7 +335,7 @@ int _co_cancel(void *co_) {
     _np->base.ready = false;                                                   \
     _handle_or_req->data = &_np->base;                                         \
     _co->public.base.line = __LINE__;                                          \
-    co_errno = _co_uv__##CALL(_co->public.base.loop, HANDLE_OR_REQ,            \
+    co_errno = _co_uv__##CALL(_co->public.base.loop, _handle_or_req,           \
                               ##__VA_ARGS__, uv_##TYPE##__cb);                 \
     if (co_errno == 0) {                                                       \
       /* all good, uv will call us back */                                     \
