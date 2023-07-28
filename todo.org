@@ -1,0 +1,16 @@
+* DONE read_{start,stop}
+yuck.  just always stop when getting the read callaback, hopefully not
+very expensive.
+
+maybe massage the callback further to do the duty of alloc_cb too (and
+pass a no-op alloc_cb)?  ergonomics!
+* DONE make provision to put magic code in callbacks
+so can /see above/
+* DONE expose specific co destructuring
+so can access state etc. reasonably conveniently not just in the coro
+itself (like in an alloc_cb or w/e).
+
+also maybe force user to choose names for args, state, etc.
+* TODO uv cancellation & closing
+Those themselves have to be async and they are on the cleanup path, argh
+* TODO think about events & other inter-coro comms

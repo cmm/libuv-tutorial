@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <uv.h>
+#include "co.h"
 
 uv_loop_t *loop;
 
