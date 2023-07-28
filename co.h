@@ -1,7 +1,5 @@
 #pragma once
 
-// TODO idle_start is wrong
-
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,32 +16,9 @@
 #define _co_count(...)                                                         \
   _co_count_(_, ##__VA_ARGS__, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4,   \
              3, 2, 1, 0)
-
 #define _co_count_(_, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13,  \
                    _14, _15, _16, N, ...)                                      \
   N
-
-#define _co_fields_0()
-#define _co_fields_1(X) X;
-#define _co_fields_2(X, ...) X; _co_fields_1(__VA_ARGS__)
-#define _co_fields_3(X, ...) X; _co_fields_2(__VA_ARGS__)
-#define _co_fields_4(X, ...) X; _co_fields_3(__VA_ARGS__)
-#define _co_fields_5(X, ...) X; _co_fields_4(__VA_ARGS__)
-#define _co_fields_6(X, ...) X; _co_fields_5(__VA_ARGS__)
-#define _co_fields_7(X, ...) X; _co_fields_6(__VA_ARGS__)
-#define _co_fields_8(X, ...) X; _co_fields_7(__VA_ARGS__)
-#define _co_fields_9(X, ...) X; _co_fields_8(__VA_ARGS__)
-#define _co_fields_10(X, ...) X; _co_fields_9(__VA_ARGS__)
-#define _co_fields_11(X, ...) X; _co_fields_10(__VA_ARGS__)
-#define _co_fields_12(X, ...) X; _co_fields_11(__VA_ARGS__)
-#define _co_fields_13(X, ...) X; _co_fields_12(__VA_ARGS__)
-#define _co_fields_14(X, ...) X; _co_fields_13(__VA_ARGS__)
-#define _co_fields_15(X, ...) X; _co_fields_14(__VA_ARGS__)
-#define _co_fields_16(X, ...) X; _co_fields_15(__VA_ARGS__)
-#define _co_fields(N, ...) _co_fields_(N, ##__VA_ARGS__)
-#define _co_fields_(N, ...) _co_fields_##N(__VA_ARGS__)
-#define _co_struct_body(...)                                                   \
-  { _co_fields(_co_count(__VA_ARGS__), ##__VA_ARGS__) }
 
 #define _co_tn_fields_0()
 #define _co_tn_fields_2(TYPE, NAME) TYPE NAME;
@@ -104,35 +79,34 @@
 
 typedef struct {} co_none_t;
 
-struct co_base;
-typedef void (co_fn_t)(struct co_base *);
-typedef void (co_cleanup_fn_t)(struct co_base *);
+struct co;
+typedef void (co_fn_t)(struct co *);
+typedef void (co_cleanup_fn_t)(struct co *);
 typedef int (co_cancel_fn_t)(void *);
 
-typedef struct co_base {
+typedef struct co {
   void *promise;
   uv_loop_t *loop;
   co_fn_t *fn;
   int line;
   void *nested_promise;
-  struct promise_base *np_base;
+  struct _co_promise *np_base;
   co_cleanup_fn_t *cleanup_fn;
   union {
     uv_buf_t buf;
   } stash;
-} co_base_t;
+} co_t;
 
-typedef struct promise_base {
-  co_base_t *waiter;
+typedef struct _co_promise {
+  co_t *waiter;
   void *proc;
   co_cancel_fn_t *cancel_fn;
   bool ready;
-} promise_base_t;
+} _co_promise_t;
 
 static int _co_cancel(void *);
 static void __attribute__((unused))
-_co_base_init(co_base_t *co, promise_base_t *promise, uv_loop_t *loop,
-              co_fn_t *fn) {
+_co_init(co_t *co, _co_promise_t *promise, uv_loop_t *loop, co_fn_t *fn) {
   co->promise = promise;
   co->loop = loop;
   co->fn = fn;
@@ -146,7 +120,7 @@ _co_base_init(co_base_t *co, promise_base_t *promise, uv_loop_t *loop,
 }
 
 static inline __attribute__((unused))
-void co_cancel(promise_base_t *promise) {
+void co_cancel(_co_promise_t *promise) {
   if (!promise || !promise->proc)
     return;
   if (promise->cancel_fn)
@@ -156,36 +130,35 @@ void co_cancel(promise_base_t *promise) {
 
 static __attribute__((unused))
 int _co_cancel(void *co_) {
-  __auto_type co = (co_base_t *)co_;
+  __auto_type co = (co_t *)co_;
   if (co->np_base)
     co_cancel(co->np_base);
   co->line = -1;
   return 0;
 }
 
+#define co_declare(NAME, IN_TYPE, OUT_TYPE)                                    \
+  _co_declare(extern, NAME, IN_TYPE, OUT_TYPE)
 #define _co_declare(LINKAGE, NAME, IN_TYPE, OUT_TYPE)                          \
   typedef IN_TYPE NAME##__in_t;                                                \
   typedef OUT_TYPE NAME##__out_t;                                              \
   typedef struct {                                                             \
-    promise_base_t base;                                                       \
+    _co_promise_t base;                                                        \
     NAME##__out_t out;                                                         \
   } NAME##_promise_t;                                                          \
   typedef struct {                                                             \
-    co_base_t base;                                                            \
+    co_t base;                                                                 \
     NAME##__in_t in;                                                           \
   } NAME##__public_t;                                                          \
   LINKAGE NAME##__public_t *NAME##__new(void);                                 \
-  LINKAGE void NAME##_co(co_base_t *);                                         \
+  LINKAGE void NAME##_co(co_t *);                                              \
   static void __attribute__((unused))                                          \
-  NAME##__launch(uv_loop_t *loop, promise_base_t *promise, IN_TYPE in) {       \
+  NAME##__launch(uv_loop_t *loop, _co_promise_t *promise, IN_TYPE in) {        \
     NAME##__public_t *co = NAME##__new();                                      \
-    _co_base_init(&co->base, promise, loop, NAME##_co);                        \
+    _co_init(&co->base, promise, loop, NAME##_co);                             \
     co->in = in;                                                               \
     co->base.fn(&co->base);                                                    \
   }
-
-#define co_declare(NAME, IN_TYPE, OUT_TYPE)                                    \
-  _co_declare(extern, NAME, IN_TYPE, OUT_TYPE)
 
 #define co_implement(NAME, STATE_TYPE, CLEANUP_FN)                             \
   typedef STATE_TYPE NAME##__state_t;                                          \
@@ -214,11 +187,11 @@ int _co_cancel(void *co_) {
 #define co_return(OUT)                                                         \
   do {                                                                         \
     _co_destroy;                                                               \
-    if (_promise) {                                                            \
-      typeof(_promise->out) out_ = OUT;                                        \
-      _promise->out = out_;                                                    \
-      _promise->base.ready = true;                                             \
-      co_base_t *_waiter = _promise->base.waiter;                              \
+    if (_co_promise) {                                                         \
+      typeof(_co_promise->out) out_ = OUT;                                     \
+      _co_promise->out = out_;                                                 \
+      _co_promise->base.ready = true;                                          \
+      co_t *_waiter = _co_promise->base.waiter;                                \
       _waiter->fn(_waiter);                                                    \
     }                                                                          \
     return;                                                                    \
@@ -233,7 +206,7 @@ int _co_cancel(void *co_) {
 #define co_bind(NAME, CO, IN_VAR, STATE_VAR)                                   \
   __auto_type __attribute__((unused)) _co =                                    \
       container_of(CO, NAME##__private_t, public.base);                        \
-  __auto_type __attribute__((unused)) _promise =                               \
+  __auto_type __attribute__((unused)) _co_promise =                            \
       container_of(_co->public.base.promise, NAME##_promise_t, base);          \
   __auto_type __attribute__((unused)) IN_VAR = &_co->public.in;                \
   __auto_type __attribute__((unused)) STATE_VAR = &_co->state
@@ -273,12 +246,18 @@ int _co_cancel(void *co_) {
       &container_of(_co->public.base.np_base, NAME##_promise_t, base)->out;
 
 // *** UV ***
-#define __co_define_uv(TYPE, SET_CANCEL_FN, PRE, POST, HorR_TYPE, HorR_NAME,   \
+#define _co_define_uv(TYPE, ...)                                               \
+  _co_define_uv_(TYPE, _co_uv_non_cancellable, (void)0, (void)0, ##__VA_ARGS__)
+#define _co_define_uv_cancellable(TYPE, ...)                                   \
+  _co_define_uv_(TYPE, _co_uv_cancellable, (void)0, (void)0, ##__VA_ARGS__)
+#define _co_define_uv_with_bells_on(TYPE, PRE, POST, ...)                      \
+  _co_define_uv_(TYPE, _co_uv_non_cancellable, PRE, POST, ##__VA_ARGS__)
+#define _co_define_uv_(TYPE, SET_CANCEL_FN, PRE, POST, HorR_TYPE, HorR_NAME,   \
                        ...)                                                    \
   typedef struct _co_tn_struct_body(HorR_TYPE, HorR_NAME, ##__VA_ARGS__)       \
       uv_##TYPE##__result_t;                                                   \
   typedef struct {                                                             \
-    promise_base_t base;                                                       \
+    _co_promise_t base;                                                        \
     uv_##TYPE##__result_t out;                                                 \
   } uv_##TYPE##__promise_t;                                                    \
   static inline __attribute__((unused))                                        \
@@ -291,10 +270,10 @@ int _co_cancel(void *co_) {
   }                                                                            \
   static void __attribute__((unused)) uv_##TYPE##__cb _co_tn_arglist(          \
       HorR_TYPE, HorR_NAME, ##__VA_ARGS__) {                                   \
-    __auto_type bp_ = (promise_base_t *)HorR_NAME->data;                       \
+    __auto_type bp_ = (_co_promise_t *)HorR_NAME->data;                        \
     __auto_type promise_ = container_of(bp_, uv_##TYPE##__promise_t, base);    \
     bp_->proc = promise_;                                                      \
-    co_base_t *waiter_ = bp_->waiter;                                          \
+    co_t *waiter_ = bp_->waiter;                                               \
     promise_->out =                                                            \
         ((uv_##TYPE##__result_t)_co_tn_initform(_, HorR_NAME, ##__VA_ARGS__)); \
     bp_->ready = true;                                                         \
@@ -302,19 +281,11 @@ int _co_cancel(void *co_) {
     waiter_->fn(waiter_);                                                      \
     POST;                                                                      \
   }
-
 #define _co_uv_cancellable(PROMISE)                                            \
   do {                                                                         \
     PROMISE->base.cancel_fn = (co_cancel_fn_t *)uv_cancel;                     \
   } while (false)
 #define _co_uv_non_cancellable(PROMISE)
-
-#define _co_define_uv(TYPE, ...)                                               \
-  __co_define_uv(TYPE, _co_uv_non_cancellable, (void)0, (void)0, ##__VA_ARGS__)
-#define _co_define_uv_cancellable(TYPE, ...)                                   \
-  __co_define_uv(TYPE, _co_uv_cancellable, (void)0, (void)0, ##__VA_ARGS__)
-#define _co_define_uv_with_bells_on(TYPE, PRE, POST, ...)                      \
-  __co_define_uv(TYPE, _co_uv_non_cancellable, PRE, POST, ##__VA_ARGS__)
 
 // we expect uv calls to take loop first & cb last, and to return int
 #define _co_uv_wrapper(NAME)                                                   \
@@ -324,7 +295,10 @@ int _co_cancel(void *co_) {
     return uv_##NAME _co_tn_call_args(__VA_ARGS__);                            \
   }
 
-#define __uv_await0(CALL, TYPE, HANDLE_OR_REQ, ...)                            \
+#define uv_await0(CALL, ...)                                                   \
+  _uv_await0(CALL, _co_uv_type__##CALL, ##__VA_ARGS__)
+#define _uv_await0(CALL, TYPE, ...) _uv_await0_(CALL, TYPE, ##__VA_ARGS__)
+#define _uv_await0_(CALL, TYPE, HANDLE_OR_REQ, ...)                            \
   do {                                                                         \
     __auto_type _handle_or_req = HANDLE_OR_REQ;                                \
     __auto_type _np = uv_##TYPE##__promise_new(                                \
@@ -343,25 +317,22 @@ int _co_cancel(void *co_) {
     }                                                                          \
   case __LINE__:;                                                              \
   } while (false)
-#define _uv_await0(CALL, TYPE, ...) __uv_await0(CALL, TYPE, ##__VA_ARGS__)
-#define uv_await0(CALL, ...)                                                   \
-  _uv_await0(CALL, _co_uv_type__##CALL, ##__VA_ARGS__)
 
-#define __uv_await(OUT_VAR, CALL, TYPE, ...)                                   \
-  __uv_await0(CALL, TYPE, ##__VA_ARGS__);                                      \
+#define uv_await(OUT_VAR, CALL, ...)                                           \
+  _uv_await(OUT_VAR, CALL, _co_uv_type__##CALL, ##__VA_ARGS__)
+#define _uv_await(OUT_VAR, CALL, TYPE, ...)                                    \
+  _uv_await_(OUT_VAR, CALL, TYPE, ##__VA_ARGS__)
+#define _uv_await_(OUT_VAR, CALL, TYPE, ...)                                   \
+  _uv_await0_(CALL, TYPE, ##__VA_ARGS__);                                      \
   uv_##TYPE##__result_t *OUT_VAR =                                             \
       co_errno ? NULL                                                          \
                : &container_of(_co->public.base.np_base,                       \
                                uv_##TYPE##__promise_t, base)                   \
                       ->out;
-#define _uv_await(OUT_VAR, CALL, TYPE, ...)                                    \
-  __uv_await(OUT_VAR, CALL, TYPE, ##__VA_ARGS__)
-#define uv_await(OUT_VAR, CALL, ...)                                           \
-  _uv_await(OUT_VAR, CALL, _co_uv_type__##CALL, ##__VA_ARGS__)
 
 static __attribute__((unused))
 void _co_uv_get_stashed_buf(uv_handle_t *handle, size_t, uv_buf_t *buf) {
-  __auto_type promise = (promise_base_t *)handle->data;
+  __auto_type promise = (_co_promise_t *)handle->data;
   *buf = promise->waiter->stash.buf;
 }
 
@@ -489,7 +460,6 @@ int _co_uv__idle(uv_loop_t *, uv_idle_t *idle, uv_idle_cb cb) {
 }
 #define _co_uv_type__idle idle
 
-// FIXME uv asyncs do not look amenable to coroutinization.
 _co_define_uv(async, uv_async_t *, handle);
 #define _co_uv__async_init uv_async_init
 #define _co_uv_type__async_init async
@@ -601,7 +571,8 @@ _co_define_uv_cancellable(fs, uv_fs_t *, req);
 #define _co_uv_type__fs_statfs fs
 
 // FIXME not wrapping uv_fs_poll_* & uv_fs_event_*, because not clear
-// whether changes are missed if you stop the callback.
+// whether changes are missed if you stop the callback (but they
+// probably are).
 
 // FIXME not wrapping uv_signal_*, because signals may be missed while
 // the callback is stopped.

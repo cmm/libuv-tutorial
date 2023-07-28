@@ -13,7 +13,7 @@ void crunch_away() {
 }
 
 co_define(do_stuff, co_none_t, co_none_t, uv_buf_t, NULL);
-void do_stuff_co(co_base_t *co) {
+void do_stuff_co(co_t *co) {
   co_prologue(do_stuff, co, _, buf);
   while (true) {
     *buf = uv_buf_init(buffer, 1024);
@@ -30,7 +30,7 @@ void do_stuff_co(co_base_t *co) {
 }
 
 co_define(idle, co_none_t, co_none_t, co_none_t, NULL);
-void idle_co(co_base_t *co) {
+void idle_co(co_t *co) {
   co_prologue(idle, co, _, __);
   while (true) {
     uv_await0(idle, &idler);

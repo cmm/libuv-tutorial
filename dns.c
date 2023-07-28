@@ -19,7 +19,7 @@ typedef struct {
   uv_stream_t *stream;
 } state_t;
 co_define(foo, co_none_t, co_none_t, state_t, NULL);
-void foo_co(co_base_t *co) {
+void foo_co(co_t *co) {
   co_prologue(foo, co, _, state);
   state->hints = (typeof(state->hints)){
     .ai_family = PF_INET,
