@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <uv.h>
 
+#define co_version 0
+
 #ifndef co_printf
 static __attribute__((format(printf, 1, 2), unused))
 void co_printf(const char *fmt, ...) {
@@ -109,6 +111,7 @@ typedef struct co {
     uv_buf_t buf;
   } stash;
   const char *name;
+  int version;
 } co_t;
 
 typedef struct _co_promise {
@@ -185,6 +188,7 @@ int _co_cancel(void *co_) {
     NAME##__private_t *_co = malloc(sizeof(NAME##__private_t));                \
     _co->public.base.cleanup_fn = CLEANUP_FN;                                  \
     _co->public.base.name = #NAME;                                             \
+    _co->public.base.version = co_version;                                     \
     return &_co->public;                                                       \
   }
 
@@ -229,13 +233,24 @@ _co_check_proper_return(bool *co_returning_properly) {
     NAME##__launch(LOOP, PROMISE, in_);                                        \
   } while (false)
 
+static void __attribute__((unused))
+_co_check_meta(co_t *co, const char *name, int version, const char *file,
+               int line) {
+  if (strcmp(co->name, name)) {
+    co_printf("%s:%d: the coroutine is %s, not %s\n", file, line, name,
+              co->name);
+    abort();
+  }
+  if (co->version != version) {
+    co_printf("%s:%d: coroutine library version mismatch: %d != %d\n",
+              file, line, version, co->version);
+    abort();
+  }
+}
+
 #define co_bind(NAME, CO, IN_VAR, STATE_VAR)                                   \
   __auto_type __attribute__((unused)) _co_b = CO;                              \
-  if (strcmp(_co_b->name, #NAME)) {                                            \
-    co_printf("%s:%d: the coroutine is %s, not %s\n", __FILE__, __LINE__,      \
-              #NAME, _co_b->name);                                             \
-    abort();                                                                   \
-  }                                                                            \
+  _co_check_meta(_co_b, #NAME, co_version, __FILE__, __LINE__);                \
   __auto_type __attribute__((unused)) _co =                                    \
       container_of(_co_b, NAME##__private_t, public.base);                     \
   __auto_type __attribute__((unused)) _co_promise =                            \
