@@ -10,6 +10,7 @@ uv_loop_t *loop;
 typedef struct {
   struct addrinfo hints;
   uv_getaddrinfo_t resolver;
+  struct addrinfo *ai;
   char addr[17];
   uv_connect_t connect_req;
   uv_tcp_t socket;
@@ -37,10 +38,12 @@ void foo_co(co_t *co) {
     fprintf(stderr, "getaddrinfo error %s\n", uv_err_name(ret->status));
     co_return({});
   }
-  uv_ip4_name((struct sockaddr_in*)ret->res->ai_addr, state->addr, 16);
+  state->ai = ret->res;
+  uv_ip4_name((struct sockaddr_in*)state->ai->ai_addr, state->addr, 16);
   fprintf(stderr, "%s\n", state->addr);
   uv_tcp_init(co->loop, &state->socket);
-  uv_await(c, tcp_connect, &state->connect_req, &state->socket, (const struct sockaddr*)ret->res->ai_addr);
+  uv_await(c, tcp_connect, &state->connect_req, &state->socket, (const struct sockaddr*)state->ai->ai_addr);
+  uv_freeaddrinfo(state->ai);
   if (c->status < 0) {
     fprintf(stderr, "connect error\n");
     co_return({});
