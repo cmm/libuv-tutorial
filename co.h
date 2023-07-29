@@ -217,7 +217,7 @@ _co_check_proper_return(bool *co_returning_properly) {
   __auto_type __attribute__((unused)) _co =                                    \
       container_of(_co_b, NAME##__private_t, public.base);                     \
   __auto_type __attribute__((unused)) _co_promise =                            \
-      container_of(_co->public.base.promise, NAME##_promise_t, base);          \
+      container_of(_co_b->promise, NAME##_promise_t, base);                    \
   __auto_type __attribute__((unused)) IN_VAR = &_co->public.in;                \
   __auto_type __attribute__((unused)) STATE_VAR = &_co->state
 
@@ -238,16 +238,23 @@ _co_check_proper_return(bool *co_returning_properly) {
   }                                                                            \
   co_return(OUT)
 
+static void __attribute__((unused))
+_co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
+               int line) {
+  void *np = realloc(co->previous_nested_promise, promise_size);
+  __auto_type npb = (_co_promise_t *)((char *)np + promise_base_offset);
+  npb->waiter = co;
+  npb->ready = false;
+  co->previous_nested_promise = co->nested_promise;
+  co->nested_promise = np;
+  co->np_base = npb;
+  co->line = line;
+}
+
 #define co_await0(NAME, IN)                                                    \
   do {                                                                         \
-    __auto_type _co_np = (NAME##_promise_t *)realloc(                          \
-        _co_b->previous_nested_promise, sizeof(NAME##_promise_t));             \
-    _co_b->previous_nested_promise = nested_promise;                           \
-    _co_b->nested_promise = _co_np;                                            \
-    _co_b->np_base = &_co_np->base;                                            \
-    _co_b->np_base->waiter = _co_b;                                            \
-    _co_b->np_base->ready = false;                                             \
-    _co_b->line = __LINE__;                                                    \
+    _co_await_prep(_co_b, sizeof(NAME##_promise_t),                            \
+                   offsetof(NAME##_promise_t, base), __LINE__);                \
     co_launch(_co_b->loop, _co_b->np_base, NAME, IN);                          \
     _co_returning_properly = true;                                             \
     return;                                                                    \
@@ -274,13 +281,10 @@ _co_check_proper_return(bool *co_returning_properly) {
     _co_promise_t base;                                                        \
     uv_##TYPE##__result_t out;                                                 \
   } uv_##TYPE##__promise_t;                                                    \
-  static inline __attribute__((unused))                                        \
-  uv_##TYPE##__promise_t *uv_##TYPE##__promise_new(void *old, void *req) {     \
-    __auto_type promise = (uv_##TYPE##__promise_t *)realloc(                   \
-        old, sizeof(uv_##TYPE##__promise_t));                                  \
+  static inline __attribute__((unused)) void uv_##TYPE##__promise_init(        \
+      _co_promise_t *promise, void *req) {                                     \
     SET_CANCEL_FN(promise);                                                    \
-    promise->base.proc = req;                                                  \
-    return promise;                                                            \
+    promise->proc = req;                                                       \
   }                                                                            \
   static void __attribute__((unused)) uv_##TYPE##__cb _co_tn_arglist(          \
       HorR_TYPE, HorR_NAME, ##__VA_ARGS__) {                                   \
@@ -297,7 +301,7 @@ _co_check_proper_return(bool *co_returning_properly) {
   }
 #define _co_uv_cancellable(PROMISE)                                            \
   do {                                                                         \
-    PROMISE->base.cancel_fn = (co_cancel_fn_t *)uv_cancel;                     \
+    PROMISE->cancel_fn = (co_cancel_fn_t *)uv_cancel;                          \
   } while (false)
 #define _co_uv_non_cancellable(PROMISE)
 
@@ -315,15 +319,10 @@ _co_check_proper_return(bool *co_returning_properly) {
 #define _uv_await0_(CALL, TYPE, HANDLE_OR_REQ, ...)                            \
   do {                                                                         \
     __auto_type _co_h_or_r = HANDLE_OR_REQ;                                    \
-    __auto_type _co_np =                                                       \
-        uv_##TYPE##__promise_new(_co_b->previous_nested_promise, _co_h_or_r);  \
-    _co_b->previous_nested_promise = _co_b->nested_promise;                    \
-    _co_b->nested_promise = _co_np;                                            \
-    _co_b->np_base = &_co_np->base;                                            \
-    _co_np->base.waiter = &_co->public.base;                                   \
-    _co_np->base.ready = false;                                                \
-    _co_h_or_r->data = &_co_np->base;                                          \
-    _co_b->line = __LINE__;                                                    \
+    _co_await_prep(_co_b, sizeof(uv_##TYPE##__promise_t),                      \
+                   offsetof(uv_##TYPE##__promise_t, base), __LINE__);          \
+    uv_##TYPE##__promise_init(_co_b->np_base, _co_h_or_r);                     \
+    _co_h_or_r->data = _co_b->np_base;                                         \
     co_errno = _co_uv__##CALL(_co_b->loop, _co_h_or_r, ##__VA_ARGS__,          \
                               uv_##TYPE##__cb);                                \
     if (co_errno == 0) {                                                       \
