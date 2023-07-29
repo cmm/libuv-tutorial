@@ -1,9 +1,21 @@
 #pragma once
 
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include <uv.h>
+
+#ifndef co_printf
+static __attribute__((format(printf, 1, 2), unused))
+void co_printf(const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(stderr, fmt, args);
+  va_end(args);
+}
+#endif
 
 #ifndef container_of
 #define container_of(ptr, type, member)                                        \
@@ -96,6 +108,7 @@ typedef struct co {
   union {
     uv_buf_t buf;
   } stash;
+  const char *name;
 } co_t;
 
 typedef struct _co_promise {
@@ -156,10 +169,10 @@ int _co_cancel(void *co_) {
   LINKAGE void NAME##_co(co_t *);                                              \
   static void __attribute__((unused))                                          \
   NAME##__launch(uv_loop_t *loop, _co_promise_t *promise, IN_TYPE in) {        \
-    NAME##__public_t *co = NAME##__new();                                      \
-    _co_init(&co->base, promise, loop, NAME##_co);                             \
-    co->in = in;                                                               \
-    co->base.fn(&co->base);                                                    \
+    NAME##__public_t *_co = NAME##__new();                                     \
+    _co_init(&_co->base, promise, loop, NAME##_co);                            \
+    _co->in = in;                                                              \
+    _co->base.fn(&_co->base);                                                  \
   }
 
 #define co_implement(NAME, STATE_TYPE, CLEANUP_FN)                             \
@@ -169,9 +182,10 @@ int _co_cancel(void *co_) {
     NAME##__state_t state;                                                     \
   } NAME##__private_t;                                                         \
   NAME##__public_t *NAME##__new(void) {                                        \
-    NAME##__private_t *co = malloc(sizeof(NAME##__private_t));                 \
-    co->public.base.cleanup_fn = CLEANUP_FN;                                   \
-    return &co->public;                                                        \
+    NAME##__private_t *_co = malloc(sizeof(NAME##__private_t));                \
+    _co->public.base.cleanup_fn = CLEANUP_FN;                                  \
+    _co->public.base.name = #NAME;                                             \
+    return &_co->public;                                                       \
   }
 
 #define co_define(NAME, IN_TYPE, OUT_TYPE, STATE_TYPE, CLEANUP_FN)             \
@@ -180,17 +194,20 @@ int _co_cancel(void *co_) {
 
 #define _co_destroy                                                            \
   do {                                                                         \
-    free(_co->public.base.previous_nested_promise);                            \
-    free(_co->public.base.nested_promise);                                     \
-    if (_co->public.base.cleanup_fn)                                           \
-      _co->public.base.cleanup_fn(&_co->public.base);                          \
+    free(_co_b->previous_nested_promise);                                      \
+    free(_co_b->nested_promise);                                               \
+    if (_co_b->cleanup_fn)                                                     \
+      _co_b->cleanup_fn(_co_b);                                                \
     free(_co);                                                                 \
     _co_returning_properly = true;                                             \
   } while (false)
 
 static void __attribute__((unused))
 _co_check_proper_return(bool *co_returning_properly) {
-  if (!*co_returning_properly) abort();
+  if (!*co_returning_properly) {
+    co_printf("coroutine returned other than by way of co_return()\n");
+    abort();
+  }
 }
 
 #define co_return(OUT)                                                         \
@@ -214,6 +231,11 @@ _co_check_proper_return(bool *co_returning_properly) {
 
 #define co_bind(NAME, CO, IN_VAR, STATE_VAR)                                   \
   __auto_type __attribute__((unused)) _co_b = CO;                              \
+  if (strcmp(_co_b->name, #NAME)) {                                            \
+    co_printf("%s:%d: the coroutine is %s, not %s\n", __FILE__, __LINE__,      \
+              #NAME, _co_b->name);                                             \
+    abort();                                                                   \
+  }                                                                            \
   __auto_type __attribute__((unused)) _co =                                    \
       container_of(_co_b, NAME##__private_t, public.base);                     \
   __auto_type __attribute__((unused)) _co_promise =                            \
@@ -222,13 +244,11 @@ _co_check_proper_return(bool *co_returning_properly) {
   __auto_type __attribute__((unused)) STATE_VAR = &_co->state
 
 #define co_prologue(NAME, CO, IN_VAR, STATE_VAR)                               \
-  if (strcmp(__func__, #NAME "_co"))                                           \
-    abort();                                                                   \
-  __attribute__((cleanup(_co_check_proper_return))) bool                       \
-  _co_returning_properly = false;                                              \
   co_bind(NAME, CO, IN_VAR, STATE_VAR);                                        \
+  __attribute__((                                                              \
+      cleanup(_co_check_proper_return))) bool _co_returning_properly = false;  \
   int __attribute__((unused)) co_errno = 0;                                    \
-  switch (_co->public.base.line) {                                             \
+  switch (_co_b->line) {                                                       \
   case -1:                                                                     \
     _co_destroy;                                                               \
     return;                                                                    \
@@ -264,7 +284,7 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
 #define co_await(OUT_VAR, NAME, IN)                                            \
   co_await0(NAME, IN);                                                         \
   __auto_type OUT_VAR =                                                        \
-      &container_of(_co->public.base.np_base, NAME##_promise_t, base)->out;
+      &container_of(_co_b->np_base, NAME##_promise_t, base)->out;
 
 // *** UV ***
 #define _co_define_uv(TYPE, ...)                                               \
@@ -340,10 +360,9 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
 #define _uv_await_(OUT_VAR, CALL, TYPE, ...)                                   \
   _uv_await0_(CALL, TYPE, ##__VA_ARGS__);                                      \
   uv_##TYPE##__result_t *OUT_VAR =                                             \
-      co_errno ? NULL                                                          \
-               : &container_of(_co->public.base.np_base,                       \
-                               uv_##TYPE##__promise_t, base)                   \
-                      ->out;
+      co_errno                                                                 \
+          ? NULL                                                               \
+          : &container_of(_co_b->np_base, uv_##TYPE##__promise_t, base)->out;
 
 static __attribute__((unused))
 void _co_uv_get_stashed_buf(uv_handle_t *handle, size_t, uv_buf_t *buf) {

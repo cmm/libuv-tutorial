@@ -19,6 +19,7 @@ behind.
 * DONE keep nested promises around longer
 to avoid the footgun waiting in using the previous result in next
 call's parameters
+* DONE more checking
 * TODO uv cancellation & closing
 Those themselves have to be async and they are on the cleanup path,
 argh
