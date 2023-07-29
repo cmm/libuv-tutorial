@@ -91,6 +91,7 @@ typedef struct co {
   int line;
   void *nested_promise;
   struct _co_promise *np_base;
+  void *previous_nested_promise;
   co_cleanup_fn_t *cleanup_fn;
   union {
     uv_buf_t buf;
@@ -113,6 +114,7 @@ _co_init(co_t *co, _co_promise_t *promise, uv_loop_t *loop, co_fn_t *fn) {
   co->line = 0;
   co->nested_promise = NULL;
   co->np_base = NULL;
+  co->previous_nested_promise = NULL;
   if (promise) {
     promise->proc = co;
     promise->cancel_fn = _co_cancel;
@@ -178,6 +180,7 @@ int _co_cancel(void *co_) {
 
 #define _co_destroy                                                            \
   do {                                                                         \
+    free(_co->public.base.previous_nested_promise);                            \
     free(_co->public.base.nested_promise);                                     \
     if (_co->public.base.cleanup_fn)                                           \
       _co->public.base.cleanup_fn(&_co->public.base);                          \
@@ -210,8 +213,9 @@ _co_check_proper_return(bool *co_returning_properly) {
   } while (false)
 
 #define co_bind(NAME, CO, IN_VAR, STATE_VAR)                                   \
+  __auto_type __attribute__((unused)) _co_b = CO;                              \
   __auto_type __attribute__((unused)) _co =                                    \
-      container_of(CO, NAME##__private_t, public.base);                        \
+      container_of(_co_b, NAME##__private_t, public.base);                     \
   __auto_type __attribute__((unused)) _co_promise =                            \
       container_of(_co->public.base.promise, NAME##_promise_t, base);          \
   __auto_type __attribute__((unused)) IN_VAR = &_co->public.in;                \
@@ -236,14 +240,15 @@ _co_check_proper_return(bool *co_returning_properly) {
 
 #define co_await0(NAME, IN)                                                    \
   do {                                                                         \
-    __auto_type _np = (NAME##_promise_t *)realloc(                             \
-        _co->public.base.nested_promise, sizeof(NAME##_promise_t));            \
-    _co->public.base.nested_promise = _np;                                     \
-    _co->public.base.np_base = &_np->base;                                     \
-    _co->public.base.np_base->waiter = &_co->public.base;                      \
-    _co->public.base.np_base->ready = false;                                   \
-    _co->public.base.line = __LINE__;                                          \
-    co_launch(_co->public.base.loop, _co->public.base.np_base, NAME, IN);      \
+    __auto_type _co_np = (NAME##_promise_t *)realloc(                          \
+        _co_b->previous_nested_promise, sizeof(NAME##_promise_t));             \
+    _co_b->previous_nested_promise = nested_promise;                           \
+    _co_b->nested_promise = _co_np;                                            \
+    _co_b->np_base = &_co_np->base;                                            \
+    _co_b->np_base->waiter = _co_b;                                            \
+    _co_b->np_base->ready = false;                                             \
+    _co_b->line = __LINE__;                                                    \
+    co_launch(_co_b->loop, _co_b->np_base, NAME, IN);                          \
     _co_returning_properly = true;                                             \
     return;                                                                    \
   case __LINE__:;                                                              \
@@ -309,17 +314,18 @@ _co_check_proper_return(bool *co_returning_properly) {
 #define _uv_await0(CALL, TYPE, ...) _uv_await0_(CALL, TYPE, ##__VA_ARGS__)
 #define _uv_await0_(CALL, TYPE, HANDLE_OR_REQ, ...)                            \
   do {                                                                         \
-    __auto_type _handle_or_req = HANDLE_OR_REQ;                                \
-    __auto_type _np = uv_##TYPE##__promise_new(                                \
-        _co->public.base.nested_promise, _handle_or_req);                      \
-    _co->public.base.nested_promise = _np;                                     \
-    _co->public.base.np_base = &_np->base;                                     \
-    _np->base.waiter = &_co->public.base;                                      \
-    _np->base.ready = false;                                                   \
-    _handle_or_req->data = &_np->base;                                         \
-    _co->public.base.line = __LINE__;                                          \
-    co_errno = _co_uv__##CALL(_co->public.base.loop, _handle_or_req,           \
-                              ##__VA_ARGS__, uv_##TYPE##__cb);                 \
+    __auto_type _co_h_or_r = HANDLE_OR_REQ;                                    \
+    __auto_type _co_np =                                                       \
+        uv_##TYPE##__promise_new(_co_b->previous_nested_promise, _co_h_or_r);  \
+    _co_b->previous_nested_promise = _co_b->nested_promise;                    \
+    _co_b->nested_promise = _co_np;                                            \
+    _co_b->np_base = &_co_np->base;                                            \
+    _co_np->base.waiter = &_co->public.base;                                   \
+    _co_np->base.ready = false;                                                \
+    _co_h_or_r->data = &_co_np->base;                                          \
+    _co_b->line = __LINE__;                                                    \
+    co_errno = _co_uv__##CALL(_co_b->loop, _co_h_or_r, ##__VA_ARGS__,          \
+                              uv_##TYPE##__cb);                                \
     if (co_errno == 0) {                                                       \
       /* all good, uv will call us back */                                     \
       _co_returning_properly = true;                                           \

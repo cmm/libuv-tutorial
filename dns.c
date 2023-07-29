@@ -40,8 +40,7 @@ void foo_co(co_t *co) {
   uv_ip4_name((struct sockaddr_in*)ret->res->ai_addr, state->addr, 16);
   fprintf(stderr, "%s\n", state->addr);
   uv_tcp_init(co->loop, &state->socket);
-  __auto_type ai_addr = (const struct sockaddr*)ret->res->ai_addr;
-  uv_await(c, tcp_connect, &state->connect_req, &state->socket, ai_addr);
+  uv_await(c, tcp_connect, &state->connect_req, &state->socket, (const struct sockaddr*)ret->res->ai_addr);
   if (c->status < 0) {
     fprintf(stderr, "connect error\n");
     co_return({});
