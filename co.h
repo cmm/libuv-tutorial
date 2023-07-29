@@ -99,6 +99,8 @@ typedef void (co_cleanup_fn_t)(struct co *);
 typedef int (co_cancel_fn_t)(void *);
 
 typedef struct co {
+  const char *name;
+  int version;
   void *promise;
   uv_loop_t *loop;
   co_fn_t *fn;
@@ -110,8 +112,6 @@ typedef struct co {
   union {
     uv_buf_t buf;
   } stash;
-  const char *name;
-  int version;
 } co_t;
 
 typedef struct _co_promise {
