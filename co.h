@@ -160,6 +160,29 @@ int _co_cancel(void *co_) {
   return 0;
 }
 
+#ifndef co_malloc
+static __attribute__((unused))
+void *co_malloc(size_t size) {
+  void *ret = malloc(size);
+  if (!ret) {
+    co_printf("malloc(%lu) failed\n", size);
+    abort();
+  }
+  return ret;
+}
+#endif
+#ifndef co_realloc
+static __attribute__((unused))
+void *co_realloc(void *p, size_t size) {
+  void *ret = realloc(p, size);
+  if (!ret) {
+    co_printf("realloc(%p, %lu) failed\n", p, size);
+    abort();
+  }
+  return ret;
+}
+#endif
+
 #define co_declare(NAME, IN_TYPE, OUT_TYPE)                                    \
   _co_declare(extern, NAME, IN_TYPE, OUT_TYPE)
 #define _co_declare(LINKAGE, NAME, IN_TYPE, OUT_TYPE)                          \
@@ -190,7 +213,7 @@ int _co_cancel(void *co_) {
     NAME##__state_t state;                                                     \
   } NAME##__private_t;                                                         \
   NAME##__public_t *NAME##__new(void) {                                        \
-    NAME##__private_t *_co = malloc(sizeof(NAME##__private_t));                \
+    NAME##__private_t *_co = co_malloc(sizeof(NAME##__private_t));             \
     _co->public.base.cleanup_fn = CLEANUP_FN;                                  \
     _co->public.base.name = #NAME;                                             \
     _co->public.base.version = co_version;                                     \
@@ -283,7 +306,7 @@ _co_check_meta(co_t *co, const char *name, int version, const char *file,
 static void __attribute__((unused))
 _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
                void *label) {
-  void *np = realloc(co->previous_nested_promise, promise_size);
+  void *np = co_realloc(co->previous_nested_promise, promise_size);
   __auto_type npb = (_co_promise_t *)((char *)np + promise_base_offset);
   npb->waiter = co;
   npb->ready = false;
