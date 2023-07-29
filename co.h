@@ -104,7 +104,8 @@ typedef struct co {
   void *promise;
   uv_loop_t *loop;
   co_fn_t *fn;
-  int line;
+  bool cancelled;
+  void *label;
   void *nested_promise;
   struct _co_promise *np_base;
   void *previous_nested_promise;
@@ -127,7 +128,8 @@ _co_init(co_t *co, _co_promise_t *promise, uv_loop_t *loop, co_fn_t *fn) {
   co->promise = promise;
   co->loop = loop;
   co->fn = fn;
-  co->line = 0;
+  co->cancelled = false;
+  co->label = NULL;
   co->nested_promise = NULL;
   co->np_base = NULL;
   co->previous_nested_promise = NULL;
@@ -149,9 +151,12 @@ void co_cancel(_co_promise_t *promise) {
 static __attribute__((unused))
 int _co_cancel(void *co_) {
   __auto_type co = (co_t *)co_;
+  if (co->cancelled)
+    return 0;
   if (co->np_base)
     co_cancel(co->np_base);
-  co->line = -1;
+  co->cancelled = true;
+  co->label = NULL;
   return 0;
 }
 
@@ -263,19 +268,21 @@ _co_check_meta(co_t *co, const char *name, int version, const char *file,
   __attribute__((                                                              \
       cleanup(_co_check_proper_return))) bool _co_returning_properly = false;  \
   int __attribute__((unused)) co_errno = 0;                                    \
-  switch (_co_b->line) {                                                       \
-  case -1:                                                                     \
+  if (_co_b->cancelled) {                                                      \
     _co_destroy;                                                               \
     return;                                                                    \
-  case 0:
+  }                                                                            \
+  if (_co_b->label)                                                            \
+    goto * _co_b->label;                                                       \
+  {
 
 #define co_epilogue(OUT)                                                       \
   }                                                                            \
-  co_return(OUT)
+  co_return (OUT)
 
 static void __attribute__((unused))
 _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
-               int line) {
+               void *label) {
   void *np = realloc(co->previous_nested_promise, promise_size);
   __auto_type npb = (_co_promise_t *)((char *)np + promise_base_offset);
   npb->waiter = co;
@@ -283,17 +290,20 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
   co->previous_nested_promise = co->nested_promise;
   co->nested_promise = np;
   co->np_base = npb;
-  co->line = line;
+  co->label = label;
 }
+
+#define _co_label(X) _co_concat(_co_l, X)
+#define _co_concat(X, Y) X##Y
 
 #define co_await0(NAME, IN)                                                    \
   do {                                                                         \
     _co_await_prep(_co_b, sizeof(NAME##_promise_t),                            \
-                   offsetof(NAME##_promise_t, base), __LINE__);                \
+                   offsetof(NAME##_promise_t, base), &&_co_label(__LINE__));   \
     co_launch(_co_b->loop, _co_b->np_base, NAME, IN);                          \
     _co_returning_properly = true;                                             \
     return;                                                                    \
-  case __LINE__:;                                                              \
+    _co_label(__LINE__):;                                                      \
   } while (false)
 
 #define co_await(OUT_VAR, NAME, IN)                                            \
@@ -355,7 +365,8 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
   do {                                                                         \
     __auto_type _co_h_or_r = HANDLE_OR_REQ;                                    \
     _co_await_prep(_co_b, sizeof(uv_##TYPE##__promise_t),                      \
-                   offsetof(uv_##TYPE##__promise_t, base), __LINE__);          \
+                   offsetof(uv_##TYPE##__promise_t, base),                     \
+                   &&_co_label(__LINE__));                                     \
     uv_##TYPE##__promise_init(_co_b->np_base, _co_h_or_r);                     \
     _co_h_or_r->data = _co_b->np_base;                                         \
     co_errno = _co_uv__##CALL(_co_b->loop, _co_h_or_r, ##__VA_ARGS__,          \
@@ -365,7 +376,7 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
       _co_returning_properly = true;                                           \
       return;                                                                  \
     }                                                                          \
-  case __LINE__:;                                                              \
+    _co_label(__LINE__):;                                                      \
   } while (false)
 
 #define uv_await(OUT_VAR, CALL, ...)                                           \
