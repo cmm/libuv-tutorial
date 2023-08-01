@@ -7,22 +7,22 @@ typedef struct {
 } idle_state_t;
 co_define(idle, uv_idle_t *, co_none_t, idle_state_t, NULL);
 void idle_co(co_t *co) {
-  co_prologue(idle, co, idler, state);
+  co_begin(idle, co, idler, state);
   state->count = 0;
   do {
     uv_await0(idle, *idler);
     printf("c=%lu\n", state->count);
   } while (++state->count < 10);
-  co_epilogue({});
+  co_end({});
 }
 
 co_define(idle_with_cleanup, co_none_t, co_none_t, uv_idle_t, NULL);
 void idle_with_cleanup_co(co_t *co) {
-  co_prologue(idle_with_cleanup, co, _, idler);
+  co_begin(idle_with_cleanup, co, _, idler);
   uv_idle_init(co->loop, idler);
   co_await0(idle, idler);
   uv_await0(close, (uv_handle_t *)idler);
-  co_epilogue({});
+  co_end({});
 }
 
 int main() {

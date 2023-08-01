@@ -234,14 +234,14 @@ void *co_realloc(void *p, size_t size) {
     _co_return_guard.with_respect = true;                                      \
   } while (false)
 
-typedef struct _co_return_respect_guard {
+typedef struct _co_respectful_return_guard {
   const char *func;
-  bool with_respect;
-} _co_return_respect_guard_t;
+  bool respectful;
+} _co_respectful_return_guard_t;
 
 static void __attribute__((unused))
-_co_check_return_with_respect(_co_return_respect_guard_t *returning) {
-  if (!returning->with_respect) {
+_co_check_respectful_return(_co_respectful_return_guard_t *returning) {
+  if (!returning->respectful) {
     co_printf("%s returned, but it returned without respect\n",
               returning->func);
     abort();
@@ -292,21 +292,21 @@ _co_check_meta(co_t *co, const char *name, int version, const char *file,
   __auto_type __attribute__((unused)) IN_VAR = &_co->public.in;                \
   __auto_type __attribute__((unused)) STATE_VAR = &_co->state
 
-#define co_prologue(NAME, CO, IN_VAR, STATE_VAR)                               \
+#define co_begin(NAME, CO, IN_VAR, STATE_VAR)                                  \
   co_bind(NAME, CO, IN_VAR, STATE_VAR);                                        \
-  __attribute__((cleanup(_co_check_return_with_respect)))                      \
-  _co_return_respect_guard_t _co_return_guard = {.func = __func__,             \
-                                                 .with_respect = false};       \
+  __attribute__((cleanup(_co_check_respectful_return)))                        \
+  _co_respectful_return_guard_t _co_return_guard = {.func = __func__,          \
+                                                    .respectful = false};      \
   int __attribute__((unused)) co_errno = 0;                                    \
   if (_co_b->cancelled) {                                                      \
     _co_destroy;                                                               \
     return;                                                                    \
   }                                                                            \
   if (_co_b->label)                                                            \
-    goto * _co_b->label;                                                       \
+    goto *_co_b->label;                                                        \
   {
 
-#define co_epilogue(OUT)                                                       \
+#define co_end(OUT)                                                            \
   }                                                                            \
   co_return (OUT)
 
@@ -331,7 +331,7 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
     _co_await_prep(_co_b, sizeof(NAME##_promise_t),                            \
                    offsetof(NAME##_promise_t, base), &&_co_label(__LINE__));   \
     co_launch(_co_b->loop, _co_b->np_base, NAME, IN);                          \
-    _co_return_guard.with_respect = true;                                      \
+    _co_return_guard.respectful = true;                                        \
     return;                                                                    \
     _co_label(__LINE__):;                                                      \
   } while (false)
@@ -384,7 +384,7 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
 #define _co_uv_wrapper(NAME)                                                   \
   static inline __attribute__((unused)) int _co_uv__##NAME
 #define _co_uv_sans_loop(NAME, ...)                                            \
-  _co_uv_wrapper(NAME) _co_tn_arglist(uv_loop_t *, , ##__VA_ARGS__) {          \
+  _co_uv_wrapper(NAME) _co_tn_arglist(uv_loop_t *,, ##__VA_ARGS__) {           \
     return uv_##NAME _co_tn_call_args(__VA_ARGS__);                            \
   }
 
@@ -403,7 +403,7 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
                               uv_##TYPE##__cb);                                \
     if (co_errno == 0) {                                                       \
       /* all good, uv will call us back */                                     \
-      _co_return_guard.with_respect = true;                                    \
+      _co_return_guard.respectful = true;                                      \
       return;                                                                  \
     }                                                                          \
     _co_label(__LINE__):;                                                      \
@@ -488,7 +488,7 @@ _co_define_uv_with_bells_on(udp_recv, uv_udp_recv_stop(handle), (void)0,
 // pretend there is a uv_udp_recv(), which is like uv_udp_recv_start()
 // + automatic uv_udp_recv_stop() after the recv happens and the
 // callback fires (see the udp_recv callback definition above), so it can
-// be sanely awaited.  it takes a buf (by pointer) instead of alloc_cb
+// be sanely awaited.  it takes a buf instead of alloc_cb
 static inline __attribute__((unused))
 int _co_uv__udp_recv(uv_loop_t *, uv_udp_t *handle, uv_buf_t buf,
                      uv_udp_recv_cb cb) {
@@ -508,7 +508,8 @@ _co_uv_wrapper(pipe_connect)(uv_loop_t *, uv_connect_t * req,
 
 // FIXME not wrapping poll because 1. its use is specialized and is
 // not really in our scope 2. it is not clear whether events are
-// missed while a poll handle is stopped (probably are though).
+// missed while a poll handle is stopped (edge-triggered events may
+// be).
 
 _co_define_uv_with_bells_on(prepare, uv_prepare_stop(prepare), (void)0,
                             uv_prepare_t *, prepare);

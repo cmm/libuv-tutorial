@@ -21,7 +21,7 @@ typedef struct {
 } state_t;
 co_define(foo, co_none_t, co_none_t, state_t, NULL);
 void foo_co(co_t *co) {
-  co_prologue(foo, co, _, state);
+  co_begin(foo, co, _, state);
   state->hints = (typeof(state->hints)){
     .ai_family = PF_INET,
     .ai_socktype = SOCK_STREAM,
@@ -72,7 +72,7 @@ void foo_co(co_t *co) {
   }
 
   uv_await0(close, (uv_handle_t *)state->stream);
-  co_epilogue({});
+  co_end({});
 }
 
 int main() {

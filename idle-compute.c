@@ -14,7 +14,7 @@ void crunch_away() {
 
 co_define(do_stuff, co_none_t, co_none_t, uv_buf_t, NULL);
 void do_stuff_co(co_t *co) {
-  co_prologue(do_stuff, co, _, buf);
+  co_begin(do_stuff, co, _, buf);
   while (true) {
     *buf = uv_buf_init(buffer, 1024);
     uv_await(ret, fs_read, &stdin_watcher, 0, buf, 1, -1);
@@ -26,18 +26,18 @@ void do_stuff_co(co_t *co) {
     printf("Typed %s\n", buffer);
     uv_async_send(&as);
   }
-  co_epilogue({});
+  co_end({});
 }
 
 co_define(idle, co_none_t, co_none_t, co_none_t, NULL);
 void idle_co(co_t *co) {
-  co_prologue(idle, co, _, __);
+  co_begin(idle, co, _, __);
   while (true) {
     uv_await0(idle, &idler);
     crunch_away();
     uv_await0(async_init, &as);
   }
-  co_epilogue({});
+  co_end({});
 }
 
 int main() {
