@@ -16,11 +16,22 @@ coros return void so it's very easy to just return by mistake (not
 co_return).  maybe add a runtime guard, like a scope guard that checks
 that either we are truly out or we leave a pending nested promise
 behind.
+
+try to improve this, like store the function name at least?
 * DONE keep nested promises around longer
 to avoid the footgun waiting in using the previous result in next
 call's parameters
 * DONE more checking
+* TODO find out more about the repeated-callback things
+like is it actually lossless to stop/start tcp reads?  also maybe it's
+fine to stop fs watchers after all?  but fuck signals in any case.
+* TODO split coro structs into descriptors and instances
+will make it possible to check type soundness with one pointer
+comparison, for example.  will finally have to create a .c file
+though, sad.
 * TODO uv cancellation & closing
 Those themselves have to be async and they are on the cleanup path,
 argh
-* TODO think about events & other inter-coro comms
+* think about events & other inter-coro comms
+or maybe don't, yet (until a clear need materializes).  channels or
+whatever is totally doable on top.

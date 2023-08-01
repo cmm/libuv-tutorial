@@ -231,13 +231,19 @@ void *co_realloc(void *p, size_t size) {
     if (_co_b->cleanup_fn)                                                     \
       _co_b->cleanup_fn(_co_b);                                                \
     free(_co);                                                                 \
-    _co_returning_properly = true;                                             \
+    _co_return_guard.with_respect = true;                                      \
   } while (false)
 
+typedef struct _co_return_respect_guard {
+  const char *func;
+  bool with_respect;
+} _co_return_respect_guard_t;
+
 static void __attribute__((unused))
-_co_check_proper_return(bool *co_returning_properly) {
-  if (!*co_returning_properly) {
-    co_printf("coroutine returned other than by way of co_return()\n");
+_co_check_return_with_respect(_co_return_respect_guard_t *returning) {
+  if (!returning->with_respect) {
+    co_printf("%s returned, but it returned without respect\n",
+              returning->func);
     abort();
   }
 }
@@ -288,8 +294,9 @@ _co_check_meta(co_t *co, const char *name, int version, const char *file,
 
 #define co_prologue(NAME, CO, IN_VAR, STATE_VAR)                               \
   co_bind(NAME, CO, IN_VAR, STATE_VAR);                                        \
-  __attribute__((                                                              \
-      cleanup(_co_check_proper_return))) bool _co_returning_properly = false;  \
+  __attribute__((cleanup(_co_check_return_with_respect)))                      \
+  _co_return_respect_guard_t _co_return_guard = {.func = __func__,             \
+                                                 .with_respect = false};       \
   int __attribute__((unused)) co_errno = 0;                                    \
   if (_co_b->cancelled) {                                                      \
     _co_destroy;                                                               \
@@ -324,7 +331,7 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
     _co_await_prep(_co_b, sizeof(NAME##_promise_t),                            \
                    offsetof(NAME##_promise_t, base), &&_co_label(__LINE__));   \
     co_launch(_co_b->loop, _co_b->np_base, NAME, IN);                          \
-    _co_returning_properly = true;                                             \
+    _co_return_guard.with_respect = true;                                      \
     return;                                                                    \
     _co_label(__LINE__):;                                                      \
   } while (false)
@@ -396,7 +403,7 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
                               uv_##TYPE##__cb);                                \
     if (co_errno == 0) {                                                       \
       /* all good, uv will call us back */                                     \
-      _co_returning_properly = true;                                           \
+      _co_return_guard.with_respect = true;                                    \
       return;                                                                  \
     }                                                                          \
     _co_label(__LINE__):;                                                      \
@@ -499,16 +506,9 @@ _co_uv_wrapper(pipe_connect)(uv_loop_t *, uv_connect_t * req,
 }
 #define _co_uv_type__pipe_connect connect
 
-_co_define_uv_with_bells_on(poll, uv_poll_stop(handle), (void)0, uv_poll_t *,
-                            handle, int, status, int, events);
-// pretend there is a uv_poll(), which is like uv_poll_start() +
-// automatic uv_poll_stop() after the callback fires (see the poll
-// callback definition above), so it can be sanely awaited.
-static inline __attribute__((unused))
-int _co_uv__poll(uv_loop_t *, uv_poll_t *handle, int events, uv_poll_cb cb) {
-  return uv_poll_start(handle, events, cb);
-}
-#define _co_uv_type__poll poll
+// FIXME not wrapping poll because 1. its use is specialized and is
+// not really in our scope 2. it is not clear whether events are
+// missed while a poll handle is stopped (probably are though).
 
 _co_define_uv_with_bells_on(prepare, uv_prepare_stop(prepare), (void)0,
                             uv_prepare_t *, prepare);
