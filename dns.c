@@ -19,7 +19,7 @@ typedef struct {
   uv_write_t write_req;
   uv_stream_t *stream;
 } state_t;
-co_define(foo, co_none_t, co_none_t, state_t, NULL);
+co_define(foo, co_none_t, co_none_t, state_t);
 void foo_co(co_t *co) {
   co_begin(foo, co, _, state);
   state->hints = (typeof(state->hints)){

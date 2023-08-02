@@ -5,7 +5,7 @@
 typedef struct {
   int64_t count;
 } idle_state_t;
-co_define(idle, uv_idle_t *, co_none_t, idle_state_t, NULL);
+co_define(idle, uv_idle_t *, co_none_t, idle_state_t);
 void idle_co(co_t *co) {
   co_begin(idle, co, idler, state);
   state->count = 0;
@@ -16,7 +16,7 @@ void idle_co(co_t *co) {
   co_end({});
 }
 
-co_define(idle_with_cleanup, co_none_t, co_none_t, uv_idle_t, NULL);
+co_define(idle_with_cleanup, co_none_t, co_none_t, uv_idle_t);
 void idle_with_cleanup_co(co_t *co) {
   co_begin(idle_with_cleanup, co, _, idler);
   uv_idle_init(co->loop, idler);

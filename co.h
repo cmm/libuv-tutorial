@@ -95,7 +95,6 @@ typedef struct {} co_none_t;
 
 struct co;
 typedef void (co_fn_t)(struct co *);
-typedef void (co_cleanup_fn_t)(struct co *);
 typedef int (co_cancel_fn_t)(void *);
 
 typedef struct co {
@@ -109,7 +108,6 @@ typedef struct co {
   void *nested_promise;
   struct _co_promise *np_base;
   void *previous_nested_promise;
-  co_cleanup_fn_t *cleanup_fn;
   union {
     uv_buf_t buf;
   } stash;
@@ -206,7 +204,7 @@ void *co_realloc(void *p, size_t size) {
     _co->base.fn(&_co->base);                                                  \
   }
 
-#define co_implement(NAME, STATE_TYPE, CLEANUP_FN)                             \
+#define co_implement(NAME, STATE_TYPE)                                         \
   typedef STATE_TYPE NAME##__state_t;                                          \
   typedef struct {                                                             \
     NAME##__public_t public;                                                   \
@@ -214,30 +212,27 @@ void *co_realloc(void *p, size_t size) {
   } NAME##__private_t;                                                         \
   NAME##__public_t *NAME##__new(void) {                                        \
     NAME##__private_t *_co = co_malloc(sizeof(NAME##__private_t));             \
-    _co->public.base.cleanup_fn = CLEANUP_FN;                                  \
     _co->public.base.name = #NAME;                                             \
     _co->public.base.version = co_version;                                     \
     return &_co->public;                                                       \
   }
 
-#define co_define(NAME, IN_TYPE, OUT_TYPE, STATE_TYPE, CLEANUP_FN)             \
+#define co_define(NAME, IN_TYPE, OUT_TYPE, STATE_TYPE)                         \
   _co_declare(static, NAME, IN_TYPE, OUT_TYPE);                                \
-  co_implement(NAME, STATE_TYPE, CLEANUP_FN);
-
-#define _co_destroy                                                            \
-  do {                                                                         \
-    free(_co_b->previous_nested_promise);                                      \
-    free(_co_b->nested_promise);                                               \
-    if (_co_b->cleanup_fn)                                                     \
-      _co_b->cleanup_fn(_co_b);                                                \
-    free(_co);                                                                 \
-    _co_return_guard.with_respect = true;                                      \
-  } while (false)
+  co_implement(NAME, STATE_TYPE);
 
 typedef struct _co_respectful_return_guard {
   const char *func;
   bool respectful;
 } _co_respectful_return_guard_t;
+
+#define _co_destroy                                                            \
+  do {                                                                         \
+    free(_co_b->previous_nested_promise);                                      \
+    free(_co_b->nested_promise);                                               \
+    free(_co);                                                                 \
+    _co_return_guard.respectful = true;                                        \
+  } while (false)
 
 static void __attribute__((unused))
 _co_check_respectful_return(_co_respectful_return_guard_t *returning) {

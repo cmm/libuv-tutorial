@@ -12,7 +12,7 @@ void crunch_away() {
   fprintf(stderr, "Computing PI...\n");
 }
 
-co_define(do_stuff, co_none_t, co_none_t, uv_buf_t, NULL);
+co_define(do_stuff, co_none_t, co_none_t, uv_buf_t);
 void do_stuff_co(co_t *co) {
   co_begin(do_stuff, co, _, buf);
   while (true) {
@@ -29,7 +29,7 @@ void do_stuff_co(co_t *co) {
   co_end({});
 }
 
-co_define(idle, co_none_t, co_none_t, co_none_t, NULL);
+co_define(idle, co_none_t, co_none_t, co_none_t);
 void idle_co(co_t *co) {
   co_begin(idle, co, _, __);
   while (true) {
