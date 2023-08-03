@@ -159,7 +159,7 @@ int _co_cancel(void *co_) {
 }
 
 #ifndef co_malloc
-static __attribute__((unused))
+static __attribute__((unused, malloc))
 void *co_malloc(size_t size) {
   void *ret = malloc(size);
   if (!ret) {
@@ -170,7 +170,7 @@ void *co_malloc(size_t size) {
 }
 #endif
 #ifndef co_realloc
-static __attribute__((unused))
+static __attribute__((unused, warn_unused_result))
 void *co_realloc(void *p, size_t size) {
   void *ret = realloc(p, size);
   if (!ret) {
@@ -247,11 +247,11 @@ _co_check_respectful_return(_co_respectful_return_guard_t *returning) {
   do {                                                                         \
     _co_destroy;                                                               \
     if (_co_promise) {                                                         \
-      typeof(_co_promise->out) out_ = OUT;                                     \
-      _co_promise->out = out_;                                                 \
+      typeof(_co_promise->out) _co_out = OUT;                                  \
+      _co_promise->out = _co_out;                                              \
       _co_promise->base.ready = true;                                          \
-      co_t *_waiter = _co_promise->base.waiter;                                \
-      _waiter->fn(_waiter);                                                    \
+      co_t *_co_w = _co_promise->base.waiter;                                  \
+      _co_w->fn(_co_w);                                                        \
     }                                                                          \
     return;                                                                    \
   } while (false)
@@ -292,7 +292,7 @@ _co_check_meta(co_t *co, const char *name, int version, const char *file,
   __attribute__((cleanup(_co_check_respectful_return)))                        \
   _co_respectful_return_guard_t _co_return_guard = {.func = __func__,          \
                                                     .respectful = false};      \
-  int __attribute__((unused)) co_errno = 0;                                    \
+  int __attribute__((unused)) co_status = 0;                                   \
   if (_co_b->cancelled) {                                                      \
     _co_destroy;                                                               \
     return;                                                                    \
@@ -394,9 +394,9 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
                    &&_co_label(__LINE__));                                     \
     uv_##TYPE##__promise_init(_co_b->np_base, _co_h_or_r);                     \
     _co_h_or_r->data = _co_b->np_base;                                         \
-    co_errno = _co_uv__##CALL(_co_b->loop, _co_h_or_r, ##__VA_ARGS__,          \
+    co_status = _co_uv__##CALL(_co_b->loop, _co_h_or_r, ##__VA_ARGS__,         \
                               uv_##TYPE##__cb);                                \
-    if (co_errno == 0) {                                                       \
+    if (co_status == 0) {                                                      \
       /* all good, uv will call us back */                                     \
       _co_return_guard.respectful = true;                                      \
       return;                                                                  \
@@ -411,7 +411,7 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
 #define _uv_await_(OUT_VAR, CALL, TYPE, ...)                                   \
   _uv_await0_(CALL, TYPE, ##__VA_ARGS__);                                      \
   uv_##TYPE##__result_t *OUT_VAR =                                             \
-      co_errno                                                                 \
+      co_status                                                                \
           ? NULL                                                               \
           : &container_of(_co_b->np_base, uv_##TYPE##__promise_t, base)->out;
 
