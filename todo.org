@@ -22,13 +22,21 @@ try to improve this, like store the function name at least?
 to avoid the footgun waiting in using the previous result in next
 call's parameters
 * DONE more checking
-* TODO find out more about the repeated-callback things
+* DONE find out more about the repeated-callback things
 like is it actually lossless to stop/start tcp reads?  also maybe it's
 fine to stop fs watchers after all?  but fuck signals in any case.
 * TODO split coro structs into descriptors and instances
 will make it possible to check type soundness with one pointer
 comparison, for example.  will finally have to create a .c file
 though, sad.
+* TODO the uv_listen situation
+not only does it fire the callback multiple times with no way to cork,
+it is not quite clear how to put any backpressure on it.  I guess the
+second parameter to listen(2) is it?  does it cork until previous
+listens are accept()'ed, or something else?
+
+if the second parameter is the way, then need to implement a
+uv_listener thingie etc., which will have to wait for the h/c split.
 * TODO uv cancellation & closing
 Those themselves have to be async and they are on the cleanup path,
 argh
