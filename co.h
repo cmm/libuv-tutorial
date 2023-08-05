@@ -287,7 +287,19 @@ _co_check_meta(co_t *co, const char *name, int version, const char *file,
   __auto_type __attribute__((unused)) IN_VAR = &_co->public.in;                \
   __auto_type __attribute__((unused)) STATE_VAR = &_co->state
 
-#define co_begin(NAME, CO, IN_VAR, STATE_VAR)                                  \
+#define co_begin(...) co_begin_(_co_count(__VA_ARGS__), ##__VA_ARGS__)
+#define co_begin_(N, ...) co_begin__(N, ##__VA_ARGS__)
+#define co_begin__(N, ...) co_begin__##N(__VA_ARGS__)
+#define co_begin__4(NAME, CO, IN_VAR, STATE_VAR)                               \
+  co_begin___(NAME, CO, IN_VAR, STATE_VAR, _co_l_dummy_cleanup, {              \
+    _co_l_dummy_cleanup:                                                       \
+      co_cleanup_begin;                                                        \
+      co_cleanup_end;                                                          \
+  })
+#define co_begin__5(NAME, CO, IN_VAR, STATE_VAR, CLEANUP_LABEL)                \
+  co_begin___(NAME, CO, IN_VAR, STATE_VAR, CLEANUP_LABEL,)
+#define co_begin___(NAME, CO, IN_VAR, STATE_VAR, CLEANUP_LABEL,                \
+                    DUMMY_CLEANUP_CODE)                                        \
   co_bind(NAME, CO, IN_VAR, STATE_VAR);                                        \
   __attribute__((cleanup(_co_check_respectful_return)))                        \
   _co_respectful_return_guard_t _co_return_guard = {.func = __func__,          \
@@ -299,11 +311,12 @@ _co_check_meta(co_t *co, const char *name, int version, const char *file,
   }                                                                            \
   if (_co_b->label)                                                            \
     goto *_co_b->label;                                                        \
+  DUMMY_CLEANUP_CODE;                                                          \
   {
 
 #define co_end(OUT)                                                            \
   }                                                                            \
-  co_return (OUT)
+  co_return(OUT)
 
 static void __attribute__((unused))
 _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
