@@ -94,9 +94,87 @@ void co_printf(const char *fmt, ...) {
 typedef struct {} co_none_t;
 
 struct co;
-typedef void (co_fn_t)(struct co *);
 typedef int (co_cancel_fn_t)(void *);
 
+typedef struct {
+  struct co *waiter;
+  void *proc;
+  co_cancel_fn_t *cancel_fn;
+  bool ready;
+} _co_promise_t;
+
+// *** UV ***
+#define _co_define_uv(TYPE, ...)                                               \
+  _co_define_uv_(TYPE, _co_uv_non_cancellable, (void)0, (void)0, ##__VA_ARGS__)
+#define _co_define_uv_cancellable(TYPE, ...)                                   \
+  _co_define_uv_(TYPE, _co_uv_cancellable, (void)0, (void)0, ##__VA_ARGS__)
+#define _co_define_uv_with_bells_on(TYPE, PRE, POST, ...)                      \
+  _co_define_uv_(TYPE, _co_uv_non_cancellable, PRE, POST, ##__VA_ARGS__)
+
+#define _co_uv_cancellable(PROMISE)                                            \
+  do {                                                                         \
+    PROMISE->cancel_fn = (co_cancel_fn_t *)uv_cancel;                          \
+  } while (false)
+#define _co_uv_non_cancellable(PROMISE)
+
+#define _co_define_uv_(TYPE, SET_CANCEL_FN, PRE, POST, HorR_TYPE, HorR_NAME,   \
+                       ...)                                                    \
+  typedef struct _co_tn_struct_body(HorR_TYPE, HorR_NAME, ##__VA_ARGS__)       \
+      uv_##TYPE##_out_t
+#include "co_uv.h"
+#undef _co_define_uv_
+
+typedef union {
+  uv_shutdown_out_t shutdown;
+  uv_close_out_t close;
+  uv_connection_out_t connection;
+  uv_read_out_t read;
+  uv_write_out_t write;
+  uv_connect_out_t connect;
+  uv_udp_send_out_t udp_send;
+  uv_udp_recv_out_t udp_recv;
+  uv_prepare_out_t prepare;
+  uv_check_out_t check;
+  uv_idle_out_t idle;
+  uv_async_out_t async;
+  uv_timer_out_t timer;
+  uv_getaddrinfo_out_t getaddrinfo;
+  uv_getnameinfo_out_t getnameinfo;
+  uv_after_work_out_t after_work;
+  uv_fs_out_t fs;
+  uv_random_out_t random;
+} _uv_out_t;
+
+// we expect uv calls to take loop first & cb last, and to return int
+#define _co_uv_wrapper(NAME)                                                   \
+  static inline __attribute__((unused)) int _co_uv__##NAME
+#define _co_uv_sans_loop(NAME, ...)                                            \
+  _co_uv_wrapper(NAME) _co_tn_arglist(uv_loop_t *,, ##__VA_ARGS__) {           \
+    return uv_##NAME _co_tn_call_args(__VA_ARGS__);                            \
+  }
+
+#define uv_await(CALL, ...)                                                    \
+  _uv_await(CALL, _co_uv_type__##CALL, ##__VA_ARGS__)
+#define _uv_await(CALL, TYPE, ...)                                             \
+  _uv_await_(CALL, TYPE, ##__VA_ARGS__)
+#define _uv_await_(CALL, TYPE, HANDLE_OR_REQ, ...)                             \
+  do {                                                                         \
+    __auto_type _co_p = &_co_b->uv.promise;                                    \
+    __auto_type _co_h_or_r = HANDLE_OR_REQ;                                    \
+    _co_await_prep(_co_b, _co_p, &&_co_label(__LINE__));                       \
+    uv_##TYPE##__promise_init(_co_p, _co_h_or_r);                              \
+    _co_h_or_r->data = _co_p;                                                  \
+    co_status = _co_uv__##CALL(_co_b->loop, _co_h_or_r, ##__VA_ARGS__,         \
+                               uv_##TYPE##__cb);                               \
+    if (co_status == 0) {                                                      \
+      /* all good, uv will call us back */                                     \
+      _co_return_guard.respectful = true;                                      \
+      return;                                                                  \
+    }                                                                          \
+  _co_label(__LINE__):;                                                        \
+  } while (false)
+
+typedef void (co_fn_t)(struct co *);
 typedef struct co {
   const char *name;
   int version;
@@ -105,18 +183,37 @@ typedef struct co {
   co_fn_t *fn;
   bool cancelled;
   void *label;
-  struct _co_promise *nested_promise;
-  union {
-    uv_buf_t buf;
-  } stash;
+  _co_promise_t *nested_promise;
+  struct {
+    union {
+      uv_buf_t buf;
+    } stash;
+    _co_promise_t promise;
+    _uv_out_t out;
+  } uv;
 } co_t;
 
-typedef struct _co_promise {
-  co_t *waiter;
-  void *proc;
-  co_cancel_fn_t *cancel_fn;
-  bool ready;
-} _co_promise_t;
+#define _co_define_uv_(TYPE, SET_CANCEL_FN, PRE, POST, HorR_TYPE, HorR_NAME,   \
+                       ...)                                                    \
+  static inline __attribute__((unused)) void uv_##TYPE##__promise_init(        \
+      _co_promise_t *promise, void *req) {                                     \
+    SET_CANCEL_FN(promise);                                                    \
+    promise->proc = req;                                                       \
+  }                                                                            \
+  static void __attribute__((unused)) uv_##TYPE##__cb _co_tn_arglist(          \
+      HorR_TYPE, HorR_NAME, ##__VA_ARGS__) {                                   \
+    __auto_type promise_ = (_co_promise_t *)HorR_NAME->data;                   \
+    promise_->proc = promise_;                                                 \
+    struct co *waiter_ = promise_->waiter;                                     \
+    waiter_->uv.out.TYPE =                                                     \
+        ((uv_##TYPE##_out_t)_co_tn_initform(_, HorR_NAME, ##__VA_ARGS__));     \
+    promise_->ready = true;                                                    \
+    PRE;                                                                       \
+    waiter_->fn(waiter_);                                                      \
+    POST;                                                                      \
+  }
+#include "co_uv.h"
+#undef _co_define_uv_
 
 static int _co_cancel(void *);
 static void __attribute__((unused))
@@ -302,6 +399,7 @@ _co_check_meta(co_t *co, const char *name, int version, const char *file,
   __attribute__((cleanup(_co_check_respectful_return)))                        \
   _co_respectful_return_guard_t _co_return_guard = {.func = __func__,          \
                                                     .respectful = false};      \
+  __auto_type __attribute__((unused)) uv_out = &_co_b->uv.out;                 \
   int __attribute__((unused)) co_status = 0;                                   \
   if (_co_b->cancelled) {                                                      \
     _co_destroy;                                                               \
@@ -337,99 +435,26 @@ _co_await_prep(co_t *co, _co_promise_t *promise, void *label) {
   _co_label(__LINE__):;                                                        \
   } while (false)
 
-// *** UV ***
-#define _co_define_uv(TYPE, ...)                                               \
-  _co_define_uv_(TYPE, _co_uv_non_cancellable, (void)0, (void)0, ##__VA_ARGS__)
-#define _co_define_uv_cancellable(TYPE, ...)                                   \
-  _co_define_uv_(TYPE, _co_uv_cancellable, (void)0, (void)0, ##__VA_ARGS__)
-#define _co_define_uv_with_bells_on(TYPE, PRE, POST, ...)                      \
-  _co_define_uv_(TYPE, _co_uv_non_cancellable, PRE, POST, ##__VA_ARGS__)
-#define _co_define_uv_(TYPE, SET_CANCEL_FN, PRE, POST, HorR_TYPE, HorR_NAME,   \
-                       ...)                                                    \
-  typedef struct _co_tn_struct_body(HorR_TYPE, HorR_NAME, ##__VA_ARGS__)       \
-      uv_##TYPE##__result_t;                                                   \
-  typedef struct {                                                             \
-    _co_promise_t base;                                                        \
-    uv_##TYPE##__result_t out;                                                 \
-  } uv_##TYPE##_promise_t;                                                     \
-  static inline __attribute__((unused)) void uv_##TYPE##__promise_init(        \
-      _co_promise_t *promise, void *req) {                                     \
-    SET_CANCEL_FN(promise);                                                    \
-    promise->proc = req;                                                       \
-  }                                                                            \
-  static void __attribute__((unused)) uv_##TYPE##__cb _co_tn_arglist(          \
-      HorR_TYPE, HorR_NAME, ##__VA_ARGS__) {                                   \
-    __auto_type bp_ = (_co_promise_t *)HorR_NAME->data;                        \
-    __auto_type promise_ = container_of(bp_, uv_##TYPE##_promise_t, base);     \
-    bp_->proc = promise_;                                                      \
-    co_t *waiter_ = bp_->waiter;                                               \
-    promise_->out =                                                            \
-        ((uv_##TYPE##__result_t)_co_tn_initform(_, HorR_NAME, ##__VA_ARGS__)); \
-    bp_->ready = true;                                                         \
-    PRE;                                                                       \
-    waiter_->fn(waiter_);                                                      \
-    POST;                                                                      \
-  }
-#define _co_uv_cancellable(PROMISE)                                            \
-  do {                                                                         \
-    PROMISE->cancel_fn = (co_cancel_fn_t *)uv_cancel;                          \
-  } while (false)
-#define _co_uv_non_cancellable(PROMISE)
-
-// we expect uv calls to take loop first & cb last, and to return int
-#define _co_uv_wrapper(NAME)                                                   \
-  static inline __attribute__((unused)) int _co_uv__##NAME
-#define _co_uv_sans_loop(NAME, ...)                                            \
-  _co_uv_wrapper(NAME) _co_tn_arglist(uv_loop_t *,, ##__VA_ARGS__) {           \
-    return uv_##NAME _co_tn_call_args(__VA_ARGS__);                            \
-  }
-
-#define uv_await(PROMISE, CALL, ...)                                           \
-  _uv_await(PROMISE, CALL, _co_uv_type__##CALL, ##__VA_ARGS__)
-#define _uv_await(PROMISE, CALL, TYPE, ...)                                    \
-  _uv_await_(PROMISE, CALL, TYPE, ##__VA_ARGS__)
-#define _uv_await_(PROMISE, CALL, TYPE, HANDLE_OR_REQ, ...)                    \
-  do {                                                                         \
-    __auto_type _co_p = &(PROMISE)->base;                                      \
-    __auto_type _co_h_or_r = HANDLE_OR_REQ;                                    \
-    _co_await_prep(_co_b, _co_p, &&_co_label(__LINE__));                       \
-    uv_##TYPE##__promise_init(_co_p, _co_h_or_r);                              \
-    _co_h_or_r->data = _co_p;                                                  \
-    co_status = _co_uv__##CALL(_co_b->loop, _co_h_or_r, ##__VA_ARGS__,         \
-                               uv_##TYPE##__cb);                               \
-    if (co_status == 0) {                                                      \
-      /* all good, uv will call us back */                                     \
-      _co_return_guard.respectful = true;                                      \
-      return;                                                                  \
-    }                                                                          \
-  _co_label(__LINE__):;                                                        \
-  } while (false)
-
 static __attribute__((unused))
 void _co_uv_get_stashed_buf(uv_handle_t *handle, size_t, uv_buf_t *buf) {
   __auto_type promise = (_co_promise_t *)handle->data;
-  *buf = promise->waiter->stash.buf;
+  *buf = promise->waiter->uv.stash.buf;
 }
 
-_co_define_uv_cancellable(shutdown, uv_shutdown_t *, req, int, status);
 _co_uv_sans_loop(shutdown, uv_shutdown_t *, req, uv_stream_t *, handle,
                  uv_shutdown_cb, cb);
 #define _co_uv_type__shutdown shutdown
 
-_co_define_uv(close, uv_handle_t *, handle);
 _co_uv_wrapper(close)(uv_loop_t *, uv_handle_t *handle, uv_close_cb cb) {
   uv_close(handle, cb);
   return 0;
 }
 #define _co_uv_type__close close
 
-_co_define_uv(connection, uv_stream_t *, server, int, status);
 _co_uv_sans_loop(listen, uv_stream_t *, stream, int, backlog, uv_connection_cb,
                  cb);
 #define _co_uv_type__listen connection
 
-_co_define_uv_with_bells_on(read, uv_read_stop(stream), (void)0, uv_stream_t *,
-                            stream, ssize_t, nread, const uv_buf_t *, buf);
 // pretend there is a uv_read(), which is like uv_read_start() +
 // automatic uv_read_stop() after the read happens and the callback
 // fires (see the read callback definition above), so it can be sanely
@@ -437,13 +462,12 @@ _co_define_uv_with_bells_on(read, uv_read_stop(stream), (void)0, uv_stream_t *,
 static inline __attribute__((unused))
 int _co_uv__read(uv_loop_t *, uv_stream_t *stream, uv_buf_t buf,
                  uv_read_cb cb) {
-  __auto_type promise = (uv_read_promise_t *)stream->data;
-  promise->base.waiter->stash.buf = buf;
+  __auto_type promise = (_co_promise_t *)stream->data;
+  promise->waiter->uv.stash.buf = buf;
   return uv_read_start(stream, _co_uv_get_stashed_buf, cb);
 }
 #define _co_uv_type__read read
 
-_co_define_uv_cancellable(write, uv_write_t *, req, int, status);
 _co_uv_sans_loop(write, uv_write_t *, req, uv_stream_t *, handle,
                  const uv_buf_t *, bufs, unsigned int, nbufs, uv_write_cb, cb);
 _co_uv_sans_loop(write2, uv_write_t *, req, uv_stream_t *, handle,
@@ -455,21 +479,15 @@ _co_uv_sans_loop(write2, uv_write_t *, req, uv_stream_t *, handle,
 _co_uv_sans_loop(tcp_close_reset, uv_tcp_t *, handle, uv_close_cb, cb);
 #define _co_uv_type__close_reset close
 
-_co_define_uv_cancellable(connect, uv_connect_t *, req, int, status);
 _co_uv_sans_loop(tcp_connect, uv_connect_t *, req, uv_tcp_t *, handle,
                  const struct sockaddr *, addr, uv_connect_cb, cb);
 #define _co_uv_type__tcp_connect connect
 
-_co_define_uv_cancellable(udp_send, uv_udp_send_t *, req, int, status);
 _co_uv_sans_loop(udp_send, uv_udp_send_t *, req, uv_udp_t *, handle,
                  const uv_buf_t *, bufs, unsigned int, nbufs,
                  const struct sockaddr *, addr, uv_udp_send_cb, cb);
 #define _co_uv_type__udp_send udp_send
 
-_co_define_uv_with_bells_on(udp_recv, uv_udp_recv_stop(handle), (void)0,
-                            uv_udp_t *, handle, ssize_t, nread,
-                            const uv_buf_t *, buf, const struct sockaddr *,
-                            addr, unsigned, flags);
 // pretend there is a uv_udp_recv(), which is like uv_udp_recv_start()
 // + automatic uv_udp_recv_stop() after the recv happens and the
 // callback fires (see the udp_recv callback definition above), so it can
@@ -477,8 +495,8 @@ _co_define_uv_with_bells_on(udp_recv, uv_udp_recv_stop(handle), (void)0,
 static inline __attribute__((unused))
 int _co_uv__udp_recv(uv_loop_t *, uv_udp_t *handle, uv_buf_t buf,
                      uv_udp_recv_cb cb) {
-  __auto_type promise = (uv_udp_recv_promise_t *)handle->data;
-  promise->base.waiter->stash.buf = buf;
+  __auto_type promise = (_co_promise_t *)handle->data;
+  promise->waiter->uv.stash.buf = buf;
   return uv_udp_recv_start(handle, _co_uv_get_stashed_buf, cb);
 }
 #define _co_uv_type__udp_recv udp_recv
@@ -496,8 +514,6 @@ _co_uv_wrapper(pipe_connect)(uv_loop_t *, uv_connect_t * req,
 // missed while a poll handle is stopped (edge-triggered events may
 // be).
 
-_co_define_uv_with_bells_on(prepare, uv_prepare_stop(prepare), (void)0,
-                            uv_prepare_t *, prepare);
 // pretend there is a uv_prepare(), which is like uv_prepare_start() +
 // automatic uv_prepare_stop() after the callback fires (see the
 // prepare callback definition above), so it can be sanely awaited.
@@ -507,8 +523,6 @@ int _co_uv__prepare(uv_loop_t *, uv_prepare_t *prepare, uv_prepare_cb cb) {
 }
 #define _co_uv_type__prepare prepare
 
-_co_define_uv_with_bells_on(check, uv_check_stop(check), (void)0,
-                            uv_check_t *, check);
 // pretend there is a uv_check(), which is like uv_check_start() +
 // automatic uv_check_stop() after the callback fires (see the
 // check callback definition above), so it can be sanely awaited.
@@ -518,8 +532,6 @@ int _co_uv__check(uv_loop_t *, uv_check_t *check, uv_check_cb cb) {
 }
 #define _co_uv_type__check check
 
-_co_define_uv_with_bells_on(idle, uv_idle_stop(idle), (void)0,
-                            uv_idle_t *, idle);
 // pretend there is a uv_idle(), which is like uv_idle_start() +
 // automatic uv_idle_stop() after the callback fires (see the
 // idle callback definition above), so it can be sanely awaited.
@@ -529,11 +541,9 @@ int _co_uv__idle(uv_loop_t *, uv_idle_t *idle, uv_idle_cb cb) {
 }
 #define _co_uv_type__idle idle
 
-_co_define_uv(async, uv_async_t *, handle);
 #define _co_uv__async_init uv_async_init
 #define _co_uv_type__async_init async
 
-_co_define_uv(timer, uv_timer_t *, handle);
 _co_uv_wrapper(timer)(uv_loop_t *, uv_timer_t *handle, uint64_t timeout,
                       uv_timer_cb cb) {
   // repeating timers don't make sense with coroutines
@@ -541,8 +551,6 @@ _co_uv_wrapper(timer)(uv_loop_t *, uv_timer_t *handle, uint64_t timeout,
 }
 #define _co_uv_type__timer timer
 
-_co_define_uv_cancellable(getaddrinfo, uv_getaddrinfo_t *, req, int, status,
-                          struct addrinfo *, res);
 _co_uv_wrapper(getaddrinfo)(uv_loop_t *loop, uv_getaddrinfo_t *req,
                             const char *node, const char *service,
                             const struct addrinfo *hints,
@@ -551,8 +559,6 @@ _co_uv_wrapper(getaddrinfo)(uv_loop_t *loop, uv_getaddrinfo_t *req,
 }
 #define _co_uv_type__getaddrinfo getaddrinfo
 
-_co_define_uv_cancellable(getnameinfo, uv_getnameinfo_t *, req, int, status,
-                          const char *, hostname, const char *, service);
 _co_uv_wrapper(getnameinfo)(uv_loop_t *loop, uv_getnameinfo_t *req,
                             const struct sockaddr *addr, int flags,
                             uv_getnameinfo_cb cb) {
@@ -560,11 +566,9 @@ _co_uv_wrapper(getnameinfo)(uv_loop_t *loop, uv_getnameinfo_t *req,
 }
 #define _co_uv_type__getnameinfo getnameinfo
 
-_co_define_uv(after_work, uv_work_t *, req, int, status);
 #define _co_uv__queue_work uv_queue_work
 #define _co_uv_type__queue_work after_work
 
-_co_define_uv_cancellable(fs, uv_fs_t *, req);
 #define _co_uv__fs_close uv_fs_close
 #define _co_uv_type__fs_close fs
 #define _co_uv__fs_open uv_fs_open
@@ -646,7 +650,6 @@ _co_define_uv_cancellable(fs, uv_fs_t *, req);
 // FIXME not wrapping uv_signal_*, because signals may be missed while
 // the callback is stopped.
 
-_co_define_uv_cancellable(random, uv_random_t *, req, int, status, void *, buf,
-                          size_t, buflen);
 #define _co_uv__random uv_random
 #define _co_uv_type__random random
+

@@ -12,18 +12,14 @@ void crunch_away() {
   fprintf(stderr, "Computing PI...\n");
 }
 
-typedef struct {
-  uv_buf_t buf;
-  uv_fs_promise_t ret;
-} stuff_state_t;
-co_define(do_stuff, co_none_t, co_none_t, stuff_state_t);
+co_define(do_stuff, co_none_t, co_none_t, uv_buf_t);
 void do_stuff_co(co_t *co) {
-  co_begin(do_stuff, co, _, state);
+  co_begin(do_stuff, co, _, buf);
   while (true) {
-    state->buf = uv_buf_init(buffer, 1024);
-    uv_await(&state->ret, fs_read, &stdin_watcher, 0, &state->buf, 1, -1);
+    *buf = uv_buf_init(buffer, 1024);
+    uv_await(fs_read, &stdin_watcher, 0, buf, 1, -1);
     if (stdin_watcher.result <= 0) {
-      fprintf(stderr, "Error opening file: %s\n", uv_err_name(state->ret.out.req->result));
+      fprintf(stderr, "Error opening file: %s\n", uv_err_name(uv_out->fs.req->result));
       break;
     }
     buffer[stdin_watcher.result] = '\0';
@@ -33,19 +29,13 @@ void do_stuff_co(co_t *co) {
   co_end({});
 }
 
-typedef struct {
-  union {
-    uv_idle_promise_t idle;
-    uv_async_promise_t async;
-  } ret;
-} idle_state_t;
-co_define(idle, co_none_t, co_none_t, idle_state_t);
+co_define(idle, co_none_t, co_none_t, co_none_t);
 void idle_co(co_t *co) {
-  co_begin(idle, co, _, state);
+  co_begin(idle, co, _, __);
   while (true) {
-    uv_await(&state->ret.idle, idle, &idler);
+    uv_await(idle, &idler);
     crunch_away();
-    uv_await(&state->ret.async, async_init, &as);
+    uv_await(async_init, &as);
   }
   co_end({});
 }
