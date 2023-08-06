@@ -105,9 +105,7 @@ typedef struct co {
   co_fn_t *fn;
   bool cancelled;
   void *label;
-  void *nested_promise;
-  struct _co_promise *np_base;
-  void *previous_nested_promise;
+  struct _co_promise *nested_promise;
   union {
     uv_buf_t buf;
   } stash;
@@ -129,8 +127,6 @@ _co_init(co_t *co, _co_promise_t *promise, uv_loop_t *loop, co_fn_t *fn) {
   co->cancelled = false;
   co->label = NULL;
   co->nested_promise = NULL;
-  co->np_base = NULL;
-  co->previous_nested_promise = NULL;
   if (promise) {
     promise->proc = co;
     promise->cancel_fn = _co_cancel;
@@ -151,8 +147,8 @@ int _co_cancel(void *co_) {
   __auto_type co = (co_t *)co_;
   if (co->cancelled)
     return 0;
-  if (co->np_base)
-    co_cancel(co->np_base);
+  if (co->nested_promise)
+    co_cancel(co->nested_promise);
   co->cancelled = true;
   co->label = NULL;
   return 0;
@@ -228,8 +224,6 @@ typedef struct _co_respectful_return_guard {
 
 #define _co_destroy                                                            \
   do {                                                                         \
-    free(_co_b->previous_nested_promise);                                      \
-    free(_co_b->nested_promise);                                               \
     free(_co);                                                                 \
     _co_return_guard.respectful = true;                                        \
   } while (false)
@@ -242,6 +236,10 @@ _co_check_respectful_return(_co_respectful_return_guard_t *returning) {
     abort();
   }
 }
+
+// FIXME
+#define co_cleanup_begin
+#define co_cleanup_end
 
 #define co_return(OUT)                                                         \
   do {                                                                         \
@@ -319,35 +317,25 @@ _co_check_meta(co_t *co, const char *name, int version, const char *file,
   co_return(OUT)
 
 static void __attribute__((unused))
-_co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
-               void *label) {
-  void *np = co_realloc(co->previous_nested_promise, promise_size);
-  __auto_type npb = (_co_promise_t *)((char *)np + promise_base_offset);
-  npb->waiter = co;
-  npb->ready = false;
-  co->previous_nested_promise = co->nested_promise;
-  co->nested_promise = np;
-  co->np_base = npb;
+_co_await_prep(co_t *co, _co_promise_t *promise, void *label) {
+  promise->waiter = co;
+  promise->ready = false;
+  co->nested_promise = promise;
   co->label = label;
 }
 
 #define _co_label(X) _co_concat(_co_l, X)
 #define _co_concat(X, Y) X##Y
 
-#define co_await0(NAME, IN)                                                    \
+#define co_await(PROMISE, NAME, IN)                                            \
   do {                                                                         \
-    _co_await_prep(_co_b, sizeof(NAME##_promise_t),                            \
-                   offsetof(NAME##_promise_t, base), &&_co_label(__LINE__));   \
-    co_launch(_co_b->loop, _co_b->np_base, NAME, IN);                          \
+    __auto_type _co_p = &(PROMISE)->base;                                      \
+    _co_await_prep(_co_b, _co_p, &&_co_label(__LINE__));                       \
+    co_launch(_co_b->loop, _co_p, NAME, IN);                                   \
     _co_return_guard.respectful = true;                                        \
     return;                                                                    \
-    _co_label(__LINE__):;                                                      \
+  _co_label(__LINE__):;                                                        \
   } while (false)
-
-#define co_await(OUT_VAR, NAME, IN)                                            \
-  co_await0(NAME, IN);                                                         \
-  __auto_type OUT_VAR =                                                        \
-      &container_of(_co_b->np_base, NAME##_promise_t, base)->out;
 
 // *** UV ***
 #define _co_define_uv(TYPE, ...)                                               \
@@ -363,7 +351,7 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
   typedef struct {                                                             \
     _co_promise_t base;                                                        \
     uv_##TYPE##__result_t out;                                                 \
-  } uv_##TYPE##__promise_t;                                                    \
+  } uv_##TYPE##_promise_t;                                                     \
   static inline __attribute__((unused)) void uv_##TYPE##__promise_init(        \
       _co_promise_t *promise, void *req) {                                     \
     SET_CANCEL_FN(promise);                                                    \
@@ -372,7 +360,7 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
   static void __attribute__((unused)) uv_##TYPE##__cb _co_tn_arglist(          \
       HorR_TYPE, HorR_NAME, ##__VA_ARGS__) {                                   \
     __auto_type bp_ = (_co_promise_t *)HorR_NAME->data;                        \
-    __auto_type promise_ = container_of(bp_, uv_##TYPE##__promise_t, base);    \
+    __auto_type promise_ = container_of(bp_, uv_##TYPE##_promise_t, base);     \
     bp_->proc = promise_;                                                      \
     co_t *waiter_ = bp_->waiter;                                               \
     promise_->out =                                                            \
@@ -396,37 +384,26 @@ _co_await_prep(co_t *co, size_t promise_size, size_t promise_base_offset,
     return uv_##NAME _co_tn_call_args(__VA_ARGS__);                            \
   }
 
-#define uv_await0(CALL, ...)                                                   \
-  _uv_await0(CALL, _co_uv_type__##CALL, ##__VA_ARGS__)
-#define _uv_await0(CALL, TYPE, ...) _uv_await0_(CALL, TYPE, ##__VA_ARGS__)
-#define _uv_await0_(CALL, TYPE, HANDLE_OR_REQ, ...)                            \
+#define uv_await(PROMISE, CALL, ...)                                           \
+  _uv_await(PROMISE, CALL, _co_uv_type__##CALL, ##__VA_ARGS__)
+#define _uv_await(PROMISE, CALL, TYPE, ...)                                    \
+  _uv_await_(PROMISE, CALL, TYPE, ##__VA_ARGS__)
+#define _uv_await_(PROMISE, CALL, TYPE, HANDLE_OR_REQ, ...)                    \
   do {                                                                         \
+    __auto_type _co_p = &(PROMISE)->base;                                      \
     __auto_type _co_h_or_r = HANDLE_OR_REQ;                                    \
-    _co_await_prep(_co_b, sizeof(uv_##TYPE##__promise_t),                      \
-                   offsetof(uv_##TYPE##__promise_t, base),                     \
-                   &&_co_label(__LINE__));                                     \
-    uv_##TYPE##__promise_init(_co_b->np_base, _co_h_or_r);                     \
-    _co_h_or_r->data = _co_b->np_base;                                         \
+    _co_await_prep(_co_b, _co_p, &&_co_label(__LINE__));                       \
+    uv_##TYPE##__promise_init(_co_p, _co_h_or_r);                              \
+    _co_h_or_r->data = _co_p;                                                  \
     co_status = _co_uv__##CALL(_co_b->loop, _co_h_or_r, ##__VA_ARGS__,         \
-                              uv_##TYPE##__cb);                                \
+                               uv_##TYPE##__cb);                               \
     if (co_status == 0) {                                                      \
       /* all good, uv will call us back */                                     \
       _co_return_guard.respectful = true;                                      \
       return;                                                                  \
     }                                                                          \
-    _co_label(__LINE__):;                                                      \
+  _co_label(__LINE__):;                                                        \
   } while (false)
-
-#define uv_await(OUT_VAR, CALL, ...)                                           \
-  _uv_await(OUT_VAR, CALL, _co_uv_type__##CALL, ##__VA_ARGS__)
-#define _uv_await(OUT_VAR, CALL, TYPE, ...)                                    \
-  _uv_await_(OUT_VAR, CALL, TYPE, ##__VA_ARGS__)
-#define _uv_await_(OUT_VAR, CALL, TYPE, ...)                                   \
-  _uv_await0_(CALL, TYPE, ##__VA_ARGS__);                                      \
-  uv_##TYPE##__result_t *OUT_VAR =                                             \
-      co_status                                                                \
-          ? NULL                                                               \
-          : &container_of(_co_b->np_base, uv_##TYPE##__promise_t, base)->out;
 
 static __attribute__((unused))
 void _co_uv_get_stashed_buf(uv_handle_t *handle, size_t, uv_buf_t *buf) {
@@ -460,7 +437,7 @@ _co_define_uv_with_bells_on(read, uv_read_stop(stream), (void)0, uv_stream_t *,
 static inline __attribute__((unused))
 int _co_uv__read(uv_loop_t *, uv_stream_t *stream, uv_buf_t buf,
                  uv_read_cb cb) {
-  __auto_type promise = (uv_read__promise_t *)stream->data;
+  __auto_type promise = (uv_read_promise_t *)stream->data;
   promise->base.waiter->stash.buf = buf;
   return uv_read_start(stream, _co_uv_get_stashed_buf, cb);
 }
@@ -500,7 +477,7 @@ _co_define_uv_with_bells_on(udp_recv, uv_udp_recv_stop(handle), (void)0,
 static inline __attribute__((unused))
 int _co_uv__udp_recv(uv_loop_t *, uv_udp_t *handle, uv_buf_t buf,
                      uv_udp_recv_cb cb) {
-  __auto_type promise = (uv_udp_recv__promise_t *)handle->data;
+  __auto_type promise = (uv_udp_recv_promise_t *)handle->data;
   promise->base.waiter->stash.buf = buf;
   return uv_udp_recv_start(handle, _co_uv_get_stashed_buf, cb);
 }

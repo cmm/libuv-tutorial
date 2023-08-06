@@ -25,6 +25,11 @@ call's parameters
 * DONE find out more about the repeated-callback things
 like is it actually lossless to stop/start tcp reads?  also maybe it's
 fine to stop fs watchers after all?  but fuck signals in any case.
+* DONE offload promise management to user
+the nested promise magic is consy, hacky, and at all that not magical
+enough.
+* TODO now make uv promises built-in, with result union
+lol
 * TODO split coro structs into descriptors and instances
 will make it possible to check type soundness with one pointer
 comparison, for example.  will finally have to create a .c file
