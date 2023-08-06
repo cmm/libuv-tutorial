@@ -15,7 +15,7 @@ void idle_co(co_t *co) {
 
 typedef struct {
   uv_idle_t idler;
-  idle_promise_t idle;
+  idle_future_t idle;
 } idle_with_cleanup_state_t;
 co_define(idle_with_cleanup, co_none_t, co_none_t, idle_with_cleanup_state_t);
 void idle_with_cleanup_co(co_t *co) {

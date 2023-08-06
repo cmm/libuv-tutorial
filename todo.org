@@ -30,6 +30,7 @@ the nested promise magic is consy, hacky, and at all that not magical
 enough.
 * DONE now make uv promises built-in, with result union
 lol
+* DONE promise -> future
 * TODO split coro structs into descriptors and instances
 will make it possible to check type soundness with one pointer
 comparison, for example.  will finally have to create a .c file
