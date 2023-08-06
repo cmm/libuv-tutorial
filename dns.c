@@ -44,7 +44,7 @@ void foo_co(co_t *co) {
   uv_tcp_init(co->loop, &state->socket);
   uv_await(tcp_connect, &state->connect_req, &state->socket, (const struct sockaddr*)state->ai->ai_addr);
   uv_freeaddrinfo(state->ai);
-  if (uv_out->connect.status < 0) {
+  if (co_status || uv_out->connect.status < 0) {
     fprintf(stderr, "connect error\n");
     co_return({});
   }
@@ -52,14 +52,14 @@ void foo_co(co_t *co) {
   state->w_buf = (uv_buf_t){.len = strlen(msg), .base = msg};
   __auto_type tcp = (uv_stream_t *)uv_out->connect.req->handle;
   uv_await(write, &state->write_req, tcp, &state->w_buf, 1);
-  if (uv_out->write.status < 0) {
+  if (co_status || uv_out->write.status < 0) {
     fprintf(stderr, "write error");
     co_return({});
   }
   state->stream = uv_out->write.req->handle;
   while (true) {
     uv_await(read, state->stream, (uv_buf_t){.len = sizeof(state->buffer) - 1, .base = state->buffer});
-    if (uv_out->read.nread == UV_EOF) {
+    if (co_status || uv_out->read.nread == UV_EOF) {
       printf("\n");
       break;
     }
