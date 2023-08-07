@@ -12,39 +12,43 @@ void crunch_away() {
   fprintf(stderr, "Computing PI...\n");
 }
 
-co_define(do_stuff, co_none_t, co_none_t, uv_buf_t);
+typedef struct {
+  uv_buf_t buf;
+  uv_fs_out_t fs;
+} stuff_state_t;
+co_define(do_stuff, co_none_t, co_none_t, stuff_state_t);
 void do_stuff_co(co_t *co) {
-  co_begin(do_stuff, co, _, buf);
+  co_begin(do_stuff, co, _, s);
   while (true) {
-    *buf = uv_buf_init(buffer, 1024);
-    uv_await(fs_read, &stdin_watcher, 0, buf, 1, -1);
+    s->buf = uv_buf_init(buffer, 1024);
+    uv_await(&s->fs, fs_read, &stdin_watcher, 0, &s->buf, 1, -1);
     if (stdin_watcher.result <= 0) {
-      fprintf(stderr, "Error opening file: %s\n", uv_err_name(uv_out->fs.req->result));
+      fprintf(stderr, "Error opening file: %s\n", uv_err_name(s->fs.req->result));
       break;
     }
     buffer[stdin_watcher.result] = '\0';
     printf("Typed %s\n", buffer);
     uv_async_send(&as);
   }
-  co_end({});
+  co_end(do_stuff, {});
 }
 
 co_define(idle, co_none_t, co_none_t, co_none_t);
 void idle_co(co_t *co) {
   co_begin(idle, co, _, __);
   while (true) {
-    uv_await(idle, &idler);
+    uv_await(NULL, idle, &idler);
     crunch_away();
-    uv_await(async_init, &as);
+    uv_await(NULL, async_init, &as);
   }
-  co_end({});
+  co_end(idle, {});
 }
 
 int main() {
   loop = uv_default_loop();
 
   uv_idle_init(loop, &idler);
-  co_launch(loop, NULL, idle, {});
-  co_launch(loop, NULL, do_stuff, {});
+  co_launch(loop, NULL, NULL, idle, {});
+  co_launch(loop, NULL, NULL, do_stuff, {});
   return uv_run(loop, UV_RUN_DEFAULT);
 }
