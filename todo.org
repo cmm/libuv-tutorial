@@ -34,10 +34,10 @@ lol
 * DONE unbundle coro promises & results, too
 every coro has at most one active nested promise, so makes sense to
 use the pre-allocated one.
-* TODO split coro structs into descriptors and instances
+* DONE split coro structs into descriptors and instances
 will make it possible to check type soundness with one pointer
 comparison, for example.  will finally have to create a .c file
-though, sad.
+though, sad (uh, thankfully no).
 * TODO the listen situation
 not only does it fire the callback multiple times with no way to cork,
 it is not quite clear how to put any backpressure on it.  I guess the

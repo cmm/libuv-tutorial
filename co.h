@@ -7,8 +7,6 @@
 #include <stdio.h>
 #include <uv.h>
 
-#define co_version 0
-
 #ifndef co_printf
 static __attribute__((format(printf, 1, 2), unused))
 void co_printf(const char *fmt, ...) {
@@ -154,12 +152,16 @@ typedef struct {
   } while (false)
 
 typedef void (co_fn_t)(struct co *);
-typedef struct co {
+
+typedef struct {
   const char *name;
-  int version;
+  co_fn_t * const fn;
+} _co_descriptor_t;
+
+typedef struct co {
+  const _co_descriptor_t *descriptor;
   co_future_t *future;
   uv_loop_t *loop;
-  co_fn_t *fn;
   bool cancelled;
   void *label;
   co_future_t nested_future;
@@ -186,7 +188,7 @@ typedef struct co {
     future_->ready = true;                                                     \
     future_->proc = NULL;                                                      \
     PRE;                                                                       \
-    future_->waiter->fn(future_->waiter);                                      \
+    future_->waiter->descriptor->fn(future_->waiter);                          \
     POST;                                                                      \
   }
 #include "co_uv.h"
@@ -194,10 +196,9 @@ typedef struct co {
 
 static int _co_cancel(void *);
 static void __attribute__((unused))
-_co_init(co_t *co, co_future_t *future, void *out, uv_loop_t *loop, co_fn_t *fn) {
+_co_init(co_t *co, co_future_t *future, void *out, uv_loop_t *loop) {
   co->future = future;
   co->loop = loop;
-  co->fn = fn;
   co->cancelled = false;
   co->label = NULL;
   co->nested_future = (co_future_t){};
@@ -252,8 +253,9 @@ void *co_realloc(void *p, size_t size) {
 #endif
 
 #define co_declare(NAME, IN_TYPE, OUT_TYPE)                                    \
-  _co_declare(extern, NAME, IN_TYPE, OUT_TYPE)
-#define _co_declare(LINKAGE, NAME, IN_TYPE, OUT_TYPE)                          \
+  _co_declare(extern, extern const _co_descriptor_t NAME##__descriptor, NAME,  \
+              IN_TYPE, OUT_TYPE)
+#define _co_declare(LINKAGE, DESCRIPTOR_DECL, NAME, IN_TYPE, OUT_TYPE)         \
   typedef IN_TYPE NAME##__in_t;                                                \
   typedef OUT_TYPE NAME##_out_t;                                               \
   typedef struct {                                                             \
@@ -262,13 +264,14 @@ void *co_realloc(void *p, size_t size) {
   } NAME##__public_t;                                                          \
   LINKAGE NAME##__public_t *NAME##__new(void);                                 \
   LINKAGE void NAME##_co(co_t *);                                              \
+  DESCRIPTOR_DECL;                                                             \
   static void __attribute__((unused))                                          \
   NAME##__launch(uv_loop_t *loop, co_future_t *future, void *out,              \
                  IN_TYPE in) {                                                 \
     NAME##__public_t *_co = NAME##__new();                                     \
-    _co_init(&_co->base, future, out, loop, NAME##_co);                        \
+    _co_init(&_co->base, future, out, loop);                                   \
     _co->in = in;                                                              \
-    _co->base.fn(&_co->base);                                                  \
+    _co->base.descriptor->fn(&_co->base);                                      \
   }
 
 #define co_implement(NAME, STATE_TYPE)                                         \
@@ -277,15 +280,16 @@ void *co_realloc(void *p, size_t size) {
     NAME##__public_t public;                                                   \
     NAME##__state_t state;                                                     \
   } NAME##__private_t;                                                         \
+  const _co_descriptor_t NAME##__descriptor = {.name = #NAME,                  \
+                                               .fn = NAME##_co};               \
   NAME##__public_t *NAME##__new(void) {                                        \
     NAME##__private_t *_co = co_malloc(sizeof(NAME##__private_t));             \
-    _co->public.base.name = #NAME;                                             \
-    _co->public.base.version = co_version;                                     \
+    _co->public.base.descriptor = &NAME##__descriptor;                         \
     return &_co->public;                                                       \
   }
 
 #define co_define(NAME, IN_TYPE, OUT_TYPE, STATE_TYPE)                         \
-  _co_declare(static, NAME, IN_TYPE, OUT_TYPE);                                \
+  _co_declare(static, , NAME, IN_TYPE, OUT_TYPE);                              \
   co_implement(NAME, STATE_TYPE);
 
 typedef struct _co_respectful_return_guard {
@@ -314,7 +318,7 @@ _co_check_respectful_return(_co_respectful_return_guard_t *returning) {
 
 #define co_return(NAME, OUT)                                                   \
   do {                                                                         \
-    /* FIXME check co descriptor */                                            \
+    _co_check_descriptor(_co_b, &NAME##__descriptor,  __FILE__, __LINE__);     \
     _co_destroy;                                                               \
     if (_co_future) {                                                          \
       if (_co_future->out && sizeof(NAME##_out_t)) {                           \
@@ -323,7 +327,7 @@ _co_check_respectful_return(_co_respectful_return_guard_t *returning) {
       }                                                                        \
       _co_future->ready = true;                                                \
       _co_future->proc = NULL;                                                 \
-      _co_future->waiter->fn(_co_future->waiter);                              \
+      _co_future->waiter->descriptor->fn(_co_future->waiter);                  \
     }                                                                          \
     return;                                                                    \
   } while (false)
@@ -335,23 +339,18 @@ _co_check_respectful_return(_co_respectful_return_guard_t *returning) {
   } while (false)
 
 static void __attribute__((unused))
-_co_check_meta(co_t *co, const char *name, int version, const char *file,
-               int line) {
-  if (strcmp(co->name, name)) {
-    co_printf("%s:%d: the coroutine is %s, not %s\n", file, line, name,
-              co->name);
-    abort();
-  }
-  if (co->version != version) {
-    co_printf("%s:%d: coroutine library version mismatch: %d != %d\n",
-              file, line, version, co->version);
+_co_check_descriptor(co_t *co, const _co_descriptor_t *descriptor,
+                     const char *file, int line) {
+  if (co->descriptor != descriptor) {
+    co_printf("%s:%d: the coroutine is %s, not %s\n", file, line,
+              co->descriptor->name, descriptor->name);
     abort();
   }
 }
 
 #define co_bind(NAME, CO, IN_VAR, STATE_VAR)                                   \
   __auto_type __attribute__((unused)) _co_b = CO;                              \
-  _co_check_meta(_co_b, #NAME, co_version, __FILE__, __LINE__);                \
+  _co_check_descriptor(_co_b, &NAME##__descriptor,  __FILE__, __LINE__);       \
   __auto_type __attribute__((unused)) _co =                                    \
       container_of(_co_b, NAME##__private_t, public.base);                     \
   __auto_type __attribute__((unused)) _co_future = _co_b->future;              \
