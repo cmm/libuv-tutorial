@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <uv.h>
 
+// * 0: substitutable utilities
 #ifndef co_printf
 static __attribute__((format(printf, 1, 2), unused))
 void co_printf(const char *fmt, ...) {
@@ -16,7 +17,30 @@ void co_printf(const char *fmt, ...) {
   va_end(args);
 }
 #endif
+#ifndef co_malloc
+static __attribute__((unused, malloc))
+void *co_malloc(size_t size) {
+  void *ret = malloc(size);
+  if (!ret) {
+    co_printf("malloc(%lu) failed\n", size);
+    abort();
+  }
+  return ret;
+}
+#endif
+#ifndef co_realloc
+static __attribute__((unused, warn_unused_result))
+void *co_realloc(void *p, size_t size) {
+  void *ret = realloc(p, size);
+  if (!ret) {
+    co_printf("realloc(%p, %lu) failed\n", p, size);
+    abort();
+  }
+  return ret;
+}
+#endif
 
+// * 1: utilities
 #ifndef container_of
 #define container_of(ptr, type, member)                                        \
   ({                                                                           \
@@ -25,6 +49,7 @@ void co_printf(const char *fmt, ...) {
   })
 #endif
 
+// * 2: horrible macro helpers
 #define _co_count(...)                                                         \
   _co_count_(_, ##__VA_ARGS__, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4,   \
              3, 2, 1, 0)
@@ -89,68 +114,48 @@ void co_printf(const char *fmt, ...) {
 #define _co_tn_call_args(...)                                                  \
   (_co_tn_names(_co_count(__VA_ARGS__), ##__VA_ARGS__))
 
-typedef struct {} co_none_t;
+#define _co_concat(X, Y) X##Y
 
+// * 3: the future type & friends
 struct co;
 typedef int (co_cancel_fn_t)(void *);
 
 typedef struct {
   struct co *waiter;
-  void *proc;
+  void *task;
   co_cancel_fn_t *cancel_fn;
   bool ready;
   void *out;
 } co_future_t;
 
-// *** UV ***
+typedef struct {} co_none_t;
+
+// * 4: UV types (corresponding to upstream callback types), the part
+//      where we don't care about the coroutine structure
 #define _co_define_uv(TYPE, ...)                                               \
-  _co_define_uv_(TYPE, _co_uv_non_cancellable, (void)0, (void)0, ##__VA_ARGS__)
+  _co_define_uv_(TYPE, _co_uv_nada, _co_uv_nada, ##__VA_ARGS__)
 #define _co_define_uv_cancellable(TYPE, ...)                                   \
-  _co_define_uv_(TYPE, _co_uv_cancellable, (void)0, (void)0, ##__VA_ARGS__)
-#define _co_define_uv_with_bells_on(TYPE, PRE, POST, ...)                      \
-  _co_define_uv_(TYPE, _co_uv_non_cancellable, PRE, POST, ##__VA_ARGS__)
+  _co_define_uv_(TYPE, _co_uv_cancellable, _co_uv_nada, ##__VA_ARGS__)
+#define _co_define_uv_stoppable(TYPE, ...)                                     \
+  _co_define_uv_(TYPE, _co_uv_nada, uv_##TYPE##_stop, ##__VA_ARGS__)
 
 #define _co_uv_cancellable(FUTURE)                                             \
   do {                                                                         \
     FUTURE->cancel_fn = (co_cancel_fn_t *)uv_cancel;                           \
   } while (false)
-#define _co_uv_non_cancellable(FUTURE)
+#define _co_uv_nada(...) (void)0
 
-#define _co_define_uv_(TYPE, SET_CANCEL_FN, PRE, POST, HorR_TYPE, HorR_NAME,   \
-                       ...)                                                    \
-  typedef struct _co_tn_struct_body(HorR_TYPE, HorR_NAME, ##__VA_ARGS__)       \
-      uv_##TYPE##_out_t
-#include "co_uv.h"
-#undef _co_define_uv_
-
-// we expect uv calls to take loop first & cb last, and to return int
-#define _co_uv_wrapper(NAME)                                                   \
-  static inline __attribute__((unused)) int _co_uv__##NAME
-#define _co_uv_sans_loop(NAME, ...)                                            \
-  _co_uv_wrapper(NAME) _co_tn_arglist(uv_loop_t *,, ##__VA_ARGS__) {           \
-    return uv_##NAME _co_tn_call_args(__VA_ARGS__);                            \
+#define _co_define_uv_(TYPE, SET_CANCEL_FN, _, ...)                            \
+  typedef struct _co_tn_struct_body(__VA_ARGS__)                               \
+    uv_##TYPE##_out_t;                                                         \
+  static inline __attribute__((unused)) void uv_##TYPE##__future_init(         \
+      co_future_t *future, void *req) {                                        \
+    SET_CANCEL_FN(future);                                                     \
+    future->task = req;                                                        \
   }
+#include "co_uv_types.h"
 
-#define uv_await(OUT, CALL, ...)                                               \
-  _uv_await(OUT, CALL, _co_uv_type__##CALL, ##__VA_ARGS__)
-#define _uv_await(OUT, CALL, TYPE, ...)                                        \
-  _uv_await_(OUT, CALL, TYPE, ##__VA_ARGS__)
-#define _uv_await_(OUT, CALL, TYPE, HANDLE_OR_REQ, ...)                        \
-  do {                                                                         \
-    __auto_type _co_h_or_r = HANDLE_OR_REQ;                                    \
-    _co_await_prep(_co_b, OUT, &&_co_label(__LINE__));                         \
-    uv_##TYPE##__future_init(&_co_b->nested_future, _co_h_or_r);               \
-    _co_h_or_r->data = &_co_b->nested_future;                                  \
-    co_status = _co_uv__##CALL(_co_b->loop, _co_h_or_r, ##__VA_ARGS__,         \
-                               uv_##TYPE##__cb);                               \
-    if (co_status == 0) {                                                      \
-      /* all good, uv will call us back */                                     \
-      _co_return_guard.respectful = true;                                      \
-      return;                                                                  \
-    }                                                                          \
-  _co_label(__LINE__):;                                                        \
-  } while (false)
-
+// * 5: the coroutine structure
 typedef void (co_fn_t)(struct co *);
 
 typedef struct {
@@ -170,30 +175,26 @@ typedef struct co {
   } stash;
 } co_t;
 
-#define _co_define_uv_(TYPE, SET_CANCEL_FN, PRE, POST, HorR_TYPE, HorR_NAME,   \
-                       ...)                                                    \
-  static inline __attribute__((unused)) void uv_##TYPE##__future_init(         \
-      co_future_t *future, void *req) {                                        \
-    SET_CANCEL_FN(future);                                                     \
-    future->proc = req;                                                        \
-  }                                                                            \
+// * 6: UV types, the part where we do need to know about the
+//      coroutine structure so our callbacks can wake up coroutines
+#undef _co_define_uv_
+#define _co_define_uv_(TYPE, _, STOP, HorR_TYPE, HorR_NAME, ...)               \
   static void __attribute__((unused)) uv_##TYPE##__cb _co_tn_arglist(          \
       HorR_TYPE, HorR_NAME, ##__VA_ARGS__) {                                   \
     __auto_type future_ = (co_future_t *)HorR_NAME->data;                      \
-    future_->proc = future_;                                                   \
     if (future_->out) {                                                        \
       *(uv_##TYPE##_out_t *)future_->out =                                     \
           (uv_##TYPE##_out_t)_co_tn_initform(_, HorR_NAME, ##__VA_ARGS__);     \
     }                                                                          \
     future_->ready = true;                                                     \
-    future_->proc = NULL;                                                      \
-    PRE;                                                                       \
+    future_->task = NULL;                                                      \
+    STOP(HorR_NAME);                                                           \
     future_->waiter->descriptor->fn(future_->waiter);                          \
-    POST;                                                                      \
   }
-#include "co_uv.h"
+#include "co_uv_types.h"
 #undef _co_define_uv_
 
+// * 7: coroutine & future utilities
 static int _co_cancel(void *);
 static void __attribute__((unused))
 _co_init(co_t *co, co_future_t *future, void *out, uv_loop_t *loop) {
@@ -203,7 +204,7 @@ _co_init(co_t *co, co_future_t *future, void *out, uv_loop_t *loop) {
   co->label = NULL;
   co->nested_future = (co_future_t){};
   if (future) {
-    future->proc = co;
+    future->task = co;
     future->cancel_fn = _co_cancel;
     future->out = out;
   }
@@ -211,11 +212,11 @@ _co_init(co_t *co, co_future_t *future, void *out, uv_loop_t *loop) {
 
 static inline __attribute__((unused))
 void co_cancel(co_future_t *future) {
-  if (!future || !future->proc)
+  if (!future || !future->task)
     return;
   if (future->cancel_fn)
-    (void)future->cancel_fn(future->proc);
-  future->proc = NULL;
+    (void)future->cancel_fn(future->task);
+  future->task = NULL;
 }
 
 static __attribute__((unused))
@@ -223,35 +224,15 @@ int _co_cancel(void *co_) {
   __auto_type co = (co_t *)co_;
   if (co->cancelled)
     return 0;
+  // a live coroutine is by definition sleeping, so its nested future
+  // is a thing
   co_cancel(&co->nested_future);
   co->cancelled = true;
   co->label = NULL;
   return 0;
 }
 
-#ifndef co_malloc
-static __attribute__((unused, malloc))
-void *co_malloc(size_t size) {
-  void *ret = malloc(size);
-  if (!ret) {
-    co_printf("malloc(%lu) failed\n", size);
-    abort();
-  }
-  return ret;
-}
-#endif
-#ifndef co_realloc
-static __attribute__((unused, warn_unused_result))
-void *co_realloc(void *p, size_t size) {
-  void *ret = realloc(p, size);
-  if (!ret) {
-    co_printf("realloc(%p, %lu) failed\n", p, size);
-    abort();
-  }
-  return ret;
-}
-#endif
-
+// * 8: coroutines, surface syntax
 #define co_declare(NAME, IN_TYPE, OUT_TYPE)                                    \
   _co_declare(extern, extern const _co_descriptor_t NAME##__descriptor, NAME,  \
               IN_TYPE, OUT_TYPE)
@@ -292,6 +273,13 @@ void *co_realloc(void *p, size_t size) {
   _co_declare(static, , NAME, IN_TYPE, OUT_TYPE);                              \
   co_implement(NAME, STATE_TYPE);
 
+#define co_launch(LOOP, FUTURE, OUT, NAME, IN)                                 \
+  do {                                                                         \
+    NAME##__in_t in_ = IN;                                                     \
+    NAME##__launch(LOOP, FUTURE, OUT, in_);                                    \
+  } while (false)
+
+// * 9: coroutines, inner syntax support things
 typedef struct _co_respectful_return_guard {
   const char *func;
   bool respectful;
@@ -312,6 +300,7 @@ _co_check_respectful_return(_co_respectful_return_guard_t *returning) {
   }
 }
 
+// * 10: coroutine in-function syntax
 // FIXME
 #define co_cleanup_begin
 #define co_cleanup_end
@@ -323,16 +312,10 @@ _co_check_respectful_return(_co_respectful_return_guard_t *returning) {
       if (_co_out)                                                             \
         *_co_out = (typeof(*_co_out))OUT;                                      \
       _co_future->ready = true;                                                \
-      _co_future->proc = NULL;                                                 \
+      _co_future->task = NULL;                                                 \
       _co_future->waiter->descriptor->fn(_co_future->waiter);                  \
     }                                                                          \
     return;                                                                    \
-  } while (false)
-
-#define co_launch(LOOP, FUTURE, OUT, NAME, IN)                                 \
-  do {                                                                         \
-    NAME##__in_t in_ = IN;                                                     \
-    NAME##__launch(LOOP, FUTURE, OUT, in_);                                    \
   } while (false)
 
 static void __attribute__((unused))
@@ -395,7 +378,6 @@ _co_await_prep(co_t *co, void *out, void *label) {
 }
 
 #define _co_label(X) _co_concat(_co_l, X)
-#define _co_concat(X, Y) X##Y
 
 #define co_await(OUT, NAME, IN)                                                \
   do {                                                                         \
@@ -407,11 +389,42 @@ _co_await_prep(co_t *co, void *out, void *label) {
   _co_label(__LINE__):;                                                        \
   } while (false)
 
+#define uv_await(OUT, CALL, ...)                                               \
+  _uv_await(OUT, CALL, _co_uv_type__##CALL, ##__VA_ARGS__)
+#define _uv_await(OUT, CALL, TYPE, ...)                                        \
+  _uv_await_(OUT, CALL, TYPE, ##__VA_ARGS__)
+#define _uv_await_(OUT, CALL, TYPE, HANDLE_OR_REQ, ...)                        \
+  do {                                                                         \
+    __auto_type _co_h_or_r = HANDLE_OR_REQ;                                    \
+    _co_await_prep(_co_b, OUT, &&_co_label(__LINE__));                         \
+    uv_##TYPE##__future_init(&_co_b->nested_future, _co_h_or_r);               \
+    _co_h_or_r->data = &_co_b->nested_future;                                  \
+    co_status = _co_uv__##CALL(_co_b->loop, _co_h_or_r, ##__VA_ARGS__,         \
+                               uv_##TYPE##__cb);                               \
+    if (co_status == 0) {                                                      \
+      /* all good, uv will call us back */                                     \
+      _co_return_guard.respectful = true;                                      \
+      return;                                                                  \
+    }                                                                          \
+  _co_label(__LINE__):;                                                        \
+  } while (false)
+
+// * 11: UV API wrappers
 static __attribute__((unused))
 void _co_uv_get_stashed_buf(uv_handle_t *handle, size_t, uv_buf_t *buf) {
   __auto_type future = (co_future_t *)handle->data;
   *buf = future->waiter->stash.buf;
 }
+
+#define _co_uv_wrapper(NAME)                                    \
+  static inline __attribute__((unused)) int _co_uv__##NAME
+
+// we expect uv calls to take loop first & cb last, and to return int.
+// many APIs we want to wrap happen to omit the loop though
+#define _co_uv_sans_loop(NAME, ...)                                            \
+  _co_uv_wrapper(NAME) _co_tn_arglist(uv_loop_t *, , ##__VA_ARGS__) {          \
+    return uv_##NAME _co_tn_call_args(__VA_ARGS__);                            \
+  }
 
 _co_uv_sans_loop(shutdown, uv_shutdown_t *, req, uv_stream_t *, handle,
                  uv_shutdown_cb, cb);
@@ -423,9 +436,12 @@ _co_uv_wrapper(close)(uv_loop_t *, uv_handle_t *handle, uv_close_cb cb) {
 }
 #define _co_uv_type__close close
 
-_co_uv_sans_loop(listen, uv_stream_t *, stream, int, backlog, uv_connection_cb,
-                 cb);
-#define _co_uv_type__listen connection
+// FIXME listen() fires callback repeatedly and has no "stop" method,
+// will have to rig something up or just not wrap it
+
+/* _co_uv_sans_loop(listen, uv_stream_t *, stream, int, backlog, uv_connection_cb, */
+/*                  cb); */
+/* #define _co_uv_type__listen connection */
 
 // pretend there is a uv_read(), which is like uv_read_start() +
 // automatic uv_read_stop() after the read happens and the callback
@@ -523,6 +539,7 @@ _co_uv_wrapper(timer)(uv_loop_t *, uv_timer_t *handle, uint64_t timeout,
 }
 #define _co_uv_type__timer timer
 
+// put the callback last
 _co_uv_wrapper(getaddrinfo)(uv_loop_t *loop, uv_getaddrinfo_t *req,
                             const char *node, const char *service,
                             const struct addrinfo *hints,
@@ -531,6 +548,7 @@ _co_uv_wrapper(getaddrinfo)(uv_loop_t *loop, uv_getaddrinfo_t *req,
 }
 #define _co_uv_type__getaddrinfo getaddrinfo
 
+// put the callback last
 _co_uv_wrapper(getnameinfo)(uv_loop_t *loop, uv_getnameinfo_t *req,
                             const struct sockaddr *addr, int flags,
                             uv_getnameinfo_cb cb) {
@@ -625,3 +643,6 @@ _co_uv_wrapper(getnameinfo)(uv_loop_t *loop, uv_getnameinfo_t *req,
 #define _co_uv__random uv_random
 #define _co_uv_type__random random
 
+// Local Variables:
+// outline-regexp: "// [*]+"
+// End:
