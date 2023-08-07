@@ -10,7 +10,7 @@ void idle_co(co_t *co) {
     uv_await(NULL, idle, *idler);
     printf("c=%lu\n", *count);
   } while (++*count < 10);
-  co_end(idle, {});
+  co_end({});
 }
 
 typedef struct {
@@ -22,7 +22,7 @@ void idle_with_cleanup_co(co_t *co) {
   uv_idle_init(co->loop, &state->idler);
   co_await(NULL, idle, &state->idler);
   uv_await(NULL, close, (uv_handle_t *)&state->idler);
-  co_end(idle_with_cleanup, {});
+  co_end({});
 }
 
 int main() {

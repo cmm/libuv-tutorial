@@ -316,15 +316,12 @@ _co_check_respectful_return(_co_respectful_return_guard_t *returning) {
 #define co_cleanup_begin
 #define co_cleanup_end
 
-#define co_return(NAME, OUT)                                                   \
+#define co_return(OUT)                                                         \
   do {                                                                         \
-    _co_check_descriptor(_co_b, &NAME##__descriptor,  __FILE__, __LINE__);     \
     _co_destroy;                                                               \
     if (_co_future) {                                                          \
-      if (_co_future->out && sizeof(NAME##_out_t)) {                           \
-        NAME##_out_t _co_out = OUT;                                            \
-        *(NAME##_out_t *)_co_future->out = _co_out;                            \
-      }                                                                        \
+      if (_co_out)                                                             \
+        *_co_out = (typeof(*_co_out))OUT;                                      \
       _co_future->ready = true;                                                \
       _co_future->proc = NULL;                                                 \
       _co_future->waiter->descriptor->fn(_co_future->waiter);                  \
@@ -353,7 +350,8 @@ _co_check_descriptor(co_t *co, const _co_descriptor_t *descriptor,
   _co_check_descriptor(_co_b, &NAME##__descriptor,  __FILE__, __LINE__);       \
   __auto_type __attribute__((unused)) _co =                                    \
       container_of(_co_b, NAME##__private_t, public.base);                     \
-  __auto_type __attribute__((unused)) _co_future = _co_b->future;              \
+  __auto_type _co_future = _co_b->future;                                      \
+  __auto_type _co_out = (NAME##_out_t *)(_co_future ? _co_future->out : NULL); \
   __auto_type __attribute__((unused)) IN_VAR = &_co->public.in;                \
   __auto_type __attribute__((unused)) STATE_VAR = &_co->state
 
@@ -384,9 +382,9 @@ _co_check_descriptor(co_t *co, const _co_descriptor_t *descriptor,
   DUMMY_CLEANUP_CODE;                                                          \
   {
 
-#define co_end(NAME, OUT)                                                      \
+#define co_end(OUT)                                                            \
   }                                                                            \
-  co_return(NAME, OUT)
+  co_return(OUT)
 
 static void __attribute__((unused))
 _co_await_prep(co_t *co, void *out, void *label) {

@@ -30,7 +30,7 @@ void do_stuff_co(co_t *co) {
     printf("Typed %s\n", buffer);
     uv_async_send(&as);
   }
-  co_end(do_stuff, {});
+  co_end({});
 }
 
 co_define(idle, co_none_t, co_none_t, co_none_t);
@@ -41,7 +41,7 @@ void idle_co(co_t *co) {
     crunch_away();
     uv_await(NULL, async_init, &as);
   }
-  co_end(idle, {});
+  co_end({});
 }
 
 int main() {

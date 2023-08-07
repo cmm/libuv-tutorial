@@ -38,11 +38,11 @@ void foo_co(co_t *co) {
   uv_await(&s->ret.getaddrinfo, getaddrinfo, &s->resolver, "irc.freenode.net", "6667", &s->hints);
   if (co_status) {
     fprintf(stderr, "getaddrinfo call error %s\n", uv_err_name(co_status));
-    co_return(foo, {});
+    co_return({});
   }
   if (s->ret.getaddrinfo.status < 0) {
     fprintf(stderr, "getaddrinfo error %s\n", uv_err_name(s->ret.getaddrinfo.status));
-    co_return(foo, {});
+    co_return({});
   }
   s->ai = s->ret.getaddrinfo.res;
   uv_ip4_name((struct sockaddr_in*)s->ai->ai_addr, s->addr, 16);
@@ -52,7 +52,7 @@ void foo_co(co_t *co) {
   uv_freeaddrinfo(s->ai);
   if (co_status || s->ret.connect.status < 0) {
     fprintf(stderr, "connect error\n");
-    co_return(foo, {});
+    co_return({});
   }
   static char msg[] = "hello";
   s->w_buf = (uv_buf_t){.len = strlen(msg), .base = msg};
@@ -60,7 +60,7 @@ void foo_co(co_t *co) {
   uv_await(&s->ret.write, write, &s->write_req, tcp, &s->w_buf, 1);
   if (co_status || s->ret.write.status < 0) {
     fprintf(stderr, "write error");
-    co_return(foo, {});
+    co_return({});
   }
   s->stream = s->ret.write.req->handle;
   while (true) {
@@ -71,14 +71,14 @@ void foo_co(co_t *co) {
     }
     if (s->ret.read.nread < 0) {
       fprintf(stderr, "read error");
-      co_return(foo, {});
+      co_return({});
     }
     s->ret.read.buf->base[s->ret.read.nread] = '\0';
     printf("%s", s->ret.read.buf->base);
   }
 
   uv_await(NULL, close, (uv_handle_t *)s->stream);
-  co_end(foo, {});
+  co_end({});
 }
 
 int main() {
