@@ -116,6 +116,9 @@ void *co_realloc(void *p, size_t size) {
 
 #define _co_concat(X, Y) X##Y
 
+#define _co_name_and_comma(TOKEN) TOKEN ,
+#define _co_string_and_comma(TOKEN) #TOKEN ,
+
 // * 3: the future type & friends
 struct co;
 typedef int (co_cancel_fn_t)(void *);
@@ -163,13 +166,28 @@ typedef struct {
   co_fn_t * const fn;
 } _co_descriptor_t;
 
+#define _co_stages(_)                                                          \
+  _(_CO_LARVA)                                                                 \
+  _(_CO_ACTIVE)                                                                \
+  _(_CO_DONE)                                                                  \
+  _(_CO_CLEANUP)                                                               \
+  _(_CO_DEAD)
+typedef enum {
+  _co_stages(_co_name_and_comma)
+} _co_stage_t;
+static const char *_co_stage_str[] = {
+  _co_stages(_co_string_and_comma)
+};
+
 typedef struct co {
   const _co_descriptor_t *descriptor;
   co_future_t *future;
   uv_loop_t *loop;
-  bool cancelled;
+  bool do_cancel;
+  _co_stage_t stage;
   void *label;
   co_future_t nested_future;
+  // hacks go here
   union {
     uv_buf_t buf;
   } stash;
@@ -206,7 +224,8 @@ static void __attribute__((unused))
 _co_init(co_t *co, co_future_t *future, void *out, uv_loop_t *loop) {
   co->future = future;
   co->loop = loop;
-  co->cancelled = false;
+  co->do_cancel = false;
+  co->stage = _CO_LARVA;
   co->label = NULL;
   co->nested_future = (co_future_t){};
   if (future) {
@@ -228,13 +247,11 @@ void co_cancel(co_future_t *future) {
 static __attribute__((unused))
 int _co_cancel(void *co_) {
   __auto_type co = (co_t *)co_;
-  if (co->cancelled)
+  if (co->do_cancel || co->stage > _CO_ACTIVE)
     return 0;
-  // a live coroutine is by definition sleeping, so its nested future
-  // is a thing
-  co_cancel(&co->nested_future);
-  co->cancelled = true;
-  co->label = NULL;
+  if (!co->nested_future.ready)
+    co_cancel(&co->nested_future);
+  co->do_cancel = true;
   return 0;
 }
 
@@ -291,12 +308,6 @@ typedef struct _co_respectful_return_guard {
   bool respectful;
 } _co_respectful_return_guard_t;
 
-#define _co_destroy                                                            \
-  do {                                                                         \
-    free(_co);                                                                 \
-    _co_return_guard.respectful = true;                                        \
-  } while (false)
-
 static void __attribute__((unused))
 _co_check_respectful_return(_co_respectful_return_guard_t *returning) {
   if (!returning->respectful) {
@@ -305,24 +316,6 @@ _co_check_respectful_return(_co_respectful_return_guard_t *returning) {
     abort();
   }
 }
-
-// * 10: coroutine in-function syntax
-// FIXME
-#define co_cleanup_begin
-#define co_cleanup_end
-
-#define co_return(OUT)                                                         \
-  do {                                                                         \
-    _co_destroy;                                                               \
-    if (_co_future) {                                                          \
-      if (_co_out)                                                             \
-        *_co_out = (typeof(*_co_out))OUT;                                      \
-      _co_future->ready = true;                                                \
-      _co_future->task = NULL;                                                 \
-      _co_future->waiter->descriptor->fn(_co_future->waiter);                  \
-    }                                                                          \
-    return;                                                                    \
-  } while (false)
 
 static void __attribute__((unused))
 _co_check_descriptor(co_t *co, const _co_descriptor_t *descriptor,
@@ -334,6 +327,46 @@ _co_check_descriptor(co_t *co, const _co_descriptor_t *descriptor,
   }
 }
 
+static void __attribute__((unused))
+_co_check_stage(co_t *co, _co_stage_t expected, const char *file, int line) {
+  if (co->stage != expected) {
+    co_printf("%s:%d: wrong stage (expected: %s, actual: %s)\n",
+              file, line, _co_stage_str[expected], _co_stage_str[co->stage]);
+    abort();
+  }
+}
+
+static void __attribute__((unused))
+co_fulfill(co_future_t *future) {
+  future->ready = true;
+  future->task = NULL;
+  if (future->waiter)
+    future->waiter->descriptor->fn(future->waiter);
+}
+
+// * 10: coroutine in-function syntax
+#define co_return(OUT)                                                         \
+  do {                                                                         \
+    _co_check_stage(_co_b, _CO_ACTIVE, __FILE__, __LINE__);                    \
+    if (_co_future) {                                                          \
+      if (_co_out)                                                             \
+        *_co_out = (typeof(*_co_out))OUT;                                      \
+      co_fulfill(_co_future);                                                  \
+    }                                                                          \
+    _co_b->stage = _CO_DONE;                                                   \
+    goto _co_l_done;                                                           \
+  } while (false)
+
+#define _co_cleanup_begin                                                      \
+  _co_check_stage(_co_b, _CO_DONE, __FILE__, __LINE__);                        \
+  _co_b->stage = _CO_CLEANUP;                                                  \
+  {
+#define co_cleanup_end                                                         \
+  }                                                                            \
+  _co_check_stage(_co_b, _CO_CLEANUP, __FILE__, __LINE__);                     \
+  _co_b->stage = _CO_DEAD;                                                     \
+  goto _co_l_destroy;
+
 #define co_bind(NAME, CO, IN_VAR, STATE_VAR)                                   \
   __auto_type __attribute__((unused)) _co_b = CO;                              \
   _co_check_descriptor(_co_b, &NAME##__descriptor,  __FILE__, __LINE__);       \
@@ -344,36 +377,49 @@ _co_check_descriptor(co_t *co, const _co_descriptor_t *descriptor,
   __auto_type __attribute__((unused)) IN_VAR = &_co->public.in;                \
   __auto_type __attribute__((unused)) STATE_VAR = &_co->state
 
-#define co_begin(...) co_begin_(_co_count(__VA_ARGS__), ##__VA_ARGS__)
-#define co_begin_(N, ...) co_begin__(N, ##__VA_ARGS__)
-#define co_begin__(N, ...) co_begin__##N(__VA_ARGS__)
-#define co_begin__4(NAME, CO, IN_VAR, STATE_VAR)                               \
-  co_begin___(NAME, CO, IN_VAR, STATE_VAR, _co_l_dummy_cleanup, {              \
-    _co_l_dummy_cleanup:                                                       \
-      co_cleanup_begin;                                                        \
-      co_cleanup_end;                                                          \
-  })
-#define co_begin__5(NAME, CO, IN_VAR, STATE_VAR, CLEANUP_LABEL)                \
-  co_begin___(NAME, CO, IN_VAR, STATE_VAR, CLEANUP_LABEL,)
-#define co_begin___(NAME, CO, IN_VAR, STATE_VAR, CLEANUP_LABEL,                \
-                    DUMMY_CLEANUP_CODE)                                        \
+#define co_begin(NAME, CO, IN_VAR, STATE_VAR)                                  \
   co_bind(NAME, CO, IN_VAR, STATE_VAR);                                        \
   __attribute__((cleanup(_co_check_respectful_return)))                        \
   _co_respectful_return_guard_t _co_return_guard = {.func = __func__,          \
                                                     .respectful = false};      \
   int __attribute__((unused)) co_status = 0;                                   \
-  if (_co_b->cancelled) {                                                      \
-    _co_destroy;                                                               \
-    return;                                                                    \
+  if (_co_b->do_cancel) {                                                      \
+    _co_check_stage(_co_b, _CO_ACTIVE, __FILE__, __LINE__);                    \
+    _co_b->stage = _CO_DONE;                                                   \
+    _co_b->do_cancel = false;                                                  \
+    if (_co_future)                                                            \
+      co_fulfill(_co_future);                                                  \
+    goto _co_l_cleanup;                                                        \
   }                                                                            \
-  if (_co_b->label)                                                            \
-    goto *_co_b->label;                                                        \
-  DUMMY_CLEANUP_CODE;                                                          \
-  {
+  if (_co_b->label) {                                                          \
+    goto * _co_b->label;                                                       \
+  } else {                                                                     \
+    _co_check_stage(_co_b, _CO_LARVA, __FILE__, __LINE__);                     \
+    _co_b->stage = _CO_ACTIVE;                                                 \
+    goto _co_l_active;                                                         \
+  }                                                                            \
+_co_l_done:                                                                    \
+  _co_check_stage(_co_b, _CO_DONE, __FILE__, __LINE__);                        \
+  goto _co_l_cleanup;                                                          \
+_co_l_destroy:                                                                 \
+  _co_check_stage(_co_b, _CO_DEAD, __FILE__, __LINE__);                        \
+  free(_co);                                                                   \
+  _co_return_guard.respectful = true;                                          \
+  return;                                                                      \
+_co_l_active: {
 
 #define co_end(OUT)                                                            \
   }                                                                            \
-  co_return(OUT)
+  co_return(OUT);                                                              \
+_co_l_cleanup:                                                                 \
+  _co_cleanup_begin;                                                           \
+  co_cleanup_end
+
+#define co_end_with_cleanup(OUT)                                               \
+  }                                                                            \
+  co_return(OUT);                                                              \
+_co_l_cleanup:                                                                 \
+  _co_cleanup_begin
 
 static void __attribute__((unused))
 _co_await_prep(co_t *co, void *out, void *label) {

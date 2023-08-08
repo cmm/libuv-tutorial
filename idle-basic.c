@@ -2,34 +2,46 @@
 #include <uv.h>
 #include "co.h"
 
-co_define(idle, uv_idle_t *, co_none_t, int64_t);
-void idle_co(co_t *co) {
-  co_begin(idle, co, idler, count);
-  *count = 0;
-  do {
-    uv_await(NULL, idle, *idler);
-    printf("c=%lu\n", *count);
-  } while (++*count < 10);
-  co_end({});
-}
-
 typedef struct {
   uv_idle_t idler;
-} idle_with_cleanup_state_t;
-co_define(idle_with_cleanup, co_none_t, co_none_t, idle_with_cleanup_state_t);
-void idle_with_cleanup_co(co_t *co) {
-  co_begin(idle_with_cleanup, co, _, state);
-  uv_idle_init(co->loop, &state->idler);
-  co_await(NULL, idle, &state->idler);
-  uv_await(NULL, close, (uv_handle_t *)&state->idler);
-  co_end({});
+  int64_t count;
+} idle_state_t;
+co_define(idle, co_future_t *, co_none_t, idle_state_t);
+void idle_co(co_t *co) {
+  co_begin(idle, co, parent_future, s);
+  uv_idle_init(co->loop, &s->idler);
+  s->count = 0;
+  do {
+    uv_await(NULL, idle, &s->idler);
+    printf("c=%lu\n", s->count);
+    if (s->count == 2)
+      co_cancel(*parent_future);
+  } while (++s->count < 10);
+
+  co_end_with_cleanup({});
+  printf("idle co cleaning up\n");
+  uv_await(NULL, close, (uv_handle_t *)&s->idler);
+  printf("idle co done cleaning up\n");
+  co_cleanup_end;
+}
+
+co_define(idle_wrap, co_none_t, co_none_t, co_none_t);
+void idle_wrap_co(co_t *co) {
+  co_begin(idle_wrap, co, _, __);
+  co_await(NULL, idle, _co_future);
+  printf("idle co done\n");
+  co_end_with_cleanup({});
+  printf("idle_wrap would clean up if it needed to\n");
+  co_cleanup_end;
 }
 
 int main() {
   __auto_type loop = uv_default_loop();
-  printf("Idling...\n");
-  co_launch(loop, NULL, NULL, idle_with_cleanup, {});
+  printf("idling...\n");
+  co_future_t wrapper_future = {};
+  co_launch(loop, &wrapper_future, NULL, idle_wrap, {});
   uv_run(loop, UV_RUN_DEFAULT);
+  printf("cancelled: %d\n", wrapper_future.task == NULL);
   uv_loop_close(loop);
   return 0;
 }

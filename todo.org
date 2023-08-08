@@ -38,6 +38,9 @@ use the pre-allocated one.
 will make it possible to check type soundness with one pointer
 comparison, for example.  will finally have to create a .c file
 though, sad (uh, thankfully no).
+* DONE uv cancellation & closing
+Those themselves have to be async and they are on the cleanup path,
+argh
 * TODO the listen situation
 not only does it fire the callback multiple times with no way to cork,
 it is not quite clear how to put any backpressure on it.  I guess the
@@ -46,9 +49,6 @@ listens are accept()'ed, or something else?
 
 if the second parameter is the way, then need to implement a
 uv_listener thingie etc., which will have to wait for the h/c split.
-* TODO uv cancellation & closing
-Those themselves have to be async and they are on the cleanup path,
-argh
 * think about events & other inter-coro comms
 or maybe don't, yet (until a clear need materializes).  channels or
 whatever is totally doable on top.
