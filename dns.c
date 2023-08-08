@@ -5,17 +5,12 @@
 #include <uv.h>
 #include "co.h"
 
-uv_loop_t *loop;
-
 typedef struct {
-  struct addrinfo hints;
   uv_getaddrinfo_t resolver;
   struct addrinfo *ai;
-  char addr[17];
   uv_connect_t connect_req;
   uv_tcp_t socket;
   char buffer[32];
-  uv_buf_t w_buf;
   uv_write_t write_req;
   uv_stream_t *stream;
   uv_out_t uv;
@@ -23,14 +18,14 @@ typedef struct {
 co_define(foo, co_none_t, co_none_t, state_t);
 void foo_co(co_t *co) {
   co_begin(foo, co, _, s);
-  s->hints = (typeof(s->hints)){
+  static const struct addrinfo hints = {
     .ai_family = PF_INET,
     .ai_socktype = SOCK_STREAM,
     .ai_protocol = IPPROTO_TCP,
     .ai_flags = 0
   };
   fprintf(stderr, "irc.freenode.net is ");
-  uv_await(&s->uv.getaddrinfo, getaddrinfo, &s->resolver, "irc.freenode.net", "6667", &s->hints);
+  uv_await(&s->uv.getaddrinfo, getaddrinfo, &s->resolver, "irc.freenode.net", "6667", &hints);
   if (co_status) {
     fprintf(stderr, "getaddrinfo call error %s\n", uv_err_name(co_status));
     co_return({});
@@ -40,19 +35,19 @@ void foo_co(co_t *co) {
     co_return({});
   }
   s->ai = s->uv.getaddrinfo.res;
-  uv_ip4_name((struct sockaddr_in*)s->ai->ai_addr, s->addr, 16);
-  fprintf(stderr, "%s\n", s->addr);
+  char addr[17];
+  uv_ip4_name((struct sockaddr_in *)s->ai->ai_addr, addr, 16);
+  fprintf(stderr, "%s\n", addr);
   uv_tcp_init(co->loop, &s->socket);
-  uv_await(&s->uv.connect, tcp_connect, &s->connect_req, &s->socket, (const struct sockaddr*)s->ai->ai_addr);
+  uv_await(&s->uv.connect, tcp_connect, &s->connect_req, &s->socket, (const struct sockaddr *)s->ai->ai_addr);
   uv_freeaddrinfo(s->ai);
   if (co_status || s->uv.connect.status < 0) {
     fprintf(stderr, "connect error\n");
     co_return({});
   }
   static char msg[] = "hello";
-  s->w_buf = (uv_buf_t){.len = strlen(msg), .base = msg};
-  __auto_type tcp = (uv_stream_t *)s->uv.connect.req->handle;
-  uv_await(&s->uv.write, write, &s->write_req, tcp, &s->w_buf, 1);
+  __auto_type w_buf = (uv_buf_t){.len = strlen(msg), .base = msg};
+  uv_await(&s->uv.write, write, &s->write_req, (uv_stream_t *)s->uv.connect.req->handle, &w_buf, 1);
   if (co_status || s->uv.write.status < 0) {
     fprintf(stderr, "write error");
     co_return({});
@@ -72,13 +67,16 @@ void foo_co(co_t *co) {
     printf("%s", s->uv.read.buf->base);
   }
 
+  co_end_with_cleanup({});
   uv_await(NULL, close, (uv_handle_t *)s->stream);
-  co_end({});
+  co_cleanup_end;
 }
 
 int main() {
-  loop = uv_default_loop();
+  __auto_type loop = uv_default_loop();
 
   co_launch(loop, NULL, NULL, foo, {});
-  return uv_run(loop, UV_RUN_DEFAULT);
+  int ret = uv_run(loop, UV_RUN_DEFAULT);
+  uv_loop_close(loop);
+  return ret;
 }
