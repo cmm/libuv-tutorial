@@ -192,7 +192,13 @@ typedef struct co {
     future_->waiter->descriptor->fn(future_->waiter);                          \
   }
 #include "co_uv_types.h"
+// and once more
 #undef _co_define_uv_
+#define _co_define_uv_(TYPE, ...) \
+  uv_##TYPE##_out_t TYPE;
+typedef union {
+  #include "co_uv_types.h"
+} uv_out_t;
 
 // * 7: coroutine & future utilities
 static int _co_cancel(void *);

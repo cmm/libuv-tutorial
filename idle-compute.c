@@ -14,16 +14,16 @@ void crunch_away() {
 
 typedef struct {
   uv_buf_t buf;
-  uv_fs_out_t fs;
+  uv_out_t uv;
 } stuff_state_t;
 co_define(do_stuff, co_none_t, co_none_t, stuff_state_t);
 void do_stuff_co(co_t *co) {
   co_begin(do_stuff, co, _, s);
   while (true) {
     s->buf = uv_buf_init(buffer, 1024);
-    uv_await(&s->fs, fs_read, &stdin_watcher, 0, &s->buf, 1, -1);
+    uv_await(&s->uv.fs, fs_read, &stdin_watcher, 0, &s->buf, 1, -1);
     if (stdin_watcher.result <= 0) {
-      fprintf(stderr, "Error opening file: %s\n", uv_err_name(s->fs.req->result));
+      fprintf(stderr, "Error opening file: %s\n", uv_err_name(s->uv.fs.req->result));
       break;
     }
     buffer[stdin_watcher.result] = '\0';
