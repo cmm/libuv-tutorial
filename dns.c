@@ -13,11 +13,13 @@ typedef struct {
   char buffer[32];
   uv_write_t write_req;
   uv_stream_t *stream;
+  bool have_stream;
   uv_out_t uv;
 } state_t;
 co_define(foo, co_none_t, co_none_t, state_t);
 void foo_co(co_t *co) {
   co_begin(foo, co, _, s);
+
   static const struct addrinfo hints = {
     .ai_family = PF_INET,
     .ai_socktype = SOCK_STREAM,
@@ -38,13 +40,14 @@ void foo_co(co_t *co) {
   char addr[17];
   uv_ip4_name((struct sockaddr_in *)s->ai->ai_addr, addr, 16);
   fprintf(stderr, "%s\n", addr);
+
   uv_tcp_init(co->loop, &s->socket);
   uv_await(&s->uv.connect, tcp_connect, &s->connect_req, &s->socket, (const struct sockaddr *)s->ai->ai_addr);
-  uv_freeaddrinfo(s->ai);
   if (co_status || s->uv.connect.status < 0) {
     fprintf(stderr, "connect error\n");
     co_return({});
   }
+
   static char msg[] = "hello";
   __auto_type w_buf = (uv_buf_t){.len = strlen(msg), .base = msg};
   uv_await(&s->uv.write, write, &s->write_req, (uv_stream_t *)s->uv.connect.req->handle, &w_buf, 1);
@@ -53,12 +56,14 @@ void foo_co(co_t *co) {
     co_return({});
   }
   s->stream = s->uv.write.req->handle;
+
   while (true) {
     uv_await(&s->uv.read, read, s->stream, (uv_buf_t){.len = sizeof(s->buffer) - 1, .base = s->buffer});
     if (co_status || s->uv.read.nread == UV_EOF) {
       printf("\n");
       break;
     }
+    s->have_stream = true;
     if (s->uv.read.nread < 0) {
       fprintf(stderr, "read error");
       co_return({});
@@ -68,7 +73,9 @@ void foo_co(co_t *co) {
   }
 
   co_end_with_cleanup({});
-  uv_await(NULL, close, (uv_handle_t *)s->stream);
+  if (s->have_stream)
+    uv_await(NULL, close, (uv_handle_t *)s->stream);
+  uv_freeaddrinfo(s->ai);
   co_cleanup_end;
 }
 
