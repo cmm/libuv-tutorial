@@ -48,7 +48,7 @@ int main() {
   loop = uv_default_loop();
 
   uv_idle_init(loop, &idler);
-  co_launch(loop, NULL, NULL, idle, {});
-  co_launch(loop, NULL, NULL, do_stuff, {});
+  co_launch(loop, NULL, idle, {});
+  co_launch(loop, NULL, do_stuff, {});
   return uv_run(loop, UV_RUN_DEFAULT);
 }

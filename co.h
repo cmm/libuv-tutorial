@@ -125,11 +125,14 @@ typedef int (co_cancel_fn_t)(void *);
 
 typedef struct {
   struct co *waiter;
-  void *task;
-  co_cancel_fn_t *cancel_fn;
-  bool ready;
   void *out;
+  bool ready;
+  co_cancel_fn_t *cancel_fn;
+  void *task;
 } co_future_t;
+
+static void co_future_init(co_future_t *, struct co *, void *);
+static void co_future_fulfill(co_future_t *);
 
 typedef struct {} co_none_t;
 
@@ -151,7 +154,7 @@ typedef struct {} co_none_t;
 #define _co_define_uv_(TYPE, SET_CANCEL_FN, _, ...)                            \
   typedef struct _co_tn_struct_body(__VA_ARGS__)                               \
     uv_##TYPE##_out_t;                                                         \
-  static inline __attribute__((unused)) void uv_##TYPE##__future_init(         \
+  static inline __attribute__((unused)) void uv_##TYPE##__future_adorn(        \
       co_future_t *future, void *req) {                                        \
     SET_CANCEL_FN(future);                                                     \
     future->task = req;                                                        \
@@ -193,6 +196,23 @@ typedef struct co {
   } stash;
 } co_t;
 
+static void __attribute__((unused))
+co_future_init(co_future_t *future, co_t *waiter, void *out) {
+  future->waiter = waiter;
+  future->out = out;
+  future->ready = false;
+  future->cancel_fn = NULL;
+  future->task = NULL;
+}
+
+static void __attribute__((unused))
+co_future_fulfill(co_future_t *future) {
+  future->ready = true;
+  future->task = NULL;
+  if (future->waiter)
+    future->waiter->descriptor->fn(future->waiter);
+}
+
 // * 6: UV types, the part where we do need to know about the
 //      coroutine structure so our callbacks can wake up coroutines
 #undef _co_define_uv_
@@ -204,10 +224,8 @@ typedef struct co {
       *(uv_##TYPE##_out_t *)future_->out =                                     \
           (uv_##TYPE##_out_t)_co_tn_initform(_, HorR_NAME, ##__VA_ARGS__);     \
     }                                                                          \
-    future_->ready = true;                                                     \
-    future_->task = NULL;                                                      \
     STOP(HorR_NAME);                                                           \
-    future_->waiter->descriptor->fn(future_->waiter);                          \
+    co_future_fulfill(future_);                                                \
   }
 #include "co_uv_types.h"
 // and once more
@@ -221,17 +239,15 @@ typedef union {
 // * 7: coroutine & future utilities
 static int _co_cancel(void *);
 static void __attribute__((unused))
-_co_init(co_t *co, co_future_t *future, void *out, uv_loop_t *loop) {
+_co_init(co_t *co, co_future_t *future, uv_loop_t *loop) {
   co->future = future;
   co->loop = loop;
   co->do_cancel = false;
   co->stage = _CO_LARVA;
   co->label = NULL;
-  co->nested_future = (co_future_t){};
   if (future) {
     future->task = co;
     future->cancel_fn = _co_cancel;
-    future->out = out;
   }
 }
 
@@ -270,10 +286,9 @@ int _co_cancel(void *co_) {
   LINKAGE void NAME##_co(co_t *);                                              \
   DESCRIPTOR_DECL;                                                             \
   static void __attribute__((unused))                                          \
-  NAME##__launch(uv_loop_t *loop, co_future_t *future, void *out,              \
-                 IN_TYPE in) {                                                 \
+  NAME##__launch(uv_loop_t *loop, co_future_t *future, IN_TYPE in) {           \
     NAME##__public_t *_co = NAME##__new();                                     \
-    _co_init(&_co->base, future, out, loop);                                   \
+    _co_init(&_co->base, future, loop);                                        \
     _co->in = in;                                                              \
     _co->base.descriptor->fn(&_co->base);                                      \
   }
@@ -296,10 +311,10 @@ int _co_cancel(void *co_) {
   _co_declare(static, , NAME, IN_TYPE, OUT_TYPE);                              \
   co_implement(NAME, STATE_TYPE);
 
-#define co_launch(LOOP, FUTURE, OUT, NAME, IN)                                 \
+#define co_launch(LOOP, FUTURE, NAME, IN)                                      \
   do {                                                                         \
     NAME##__in_t in_ = IN;                                                     \
-    NAME##__launch(LOOP, FUTURE, OUT, in_);                                    \
+    NAME##__launch(LOOP, FUTURE, in_);                                         \
   } while (false)
 
 // * 9: coroutines, inner syntax support things
@@ -336,14 +351,6 @@ _co_check_stage(co_t *co, _co_stage_t expected, const char *file, int line) {
   }
 }
 
-static void __attribute__((unused))
-co_fulfill(co_future_t *future) {
-  future->ready = true;
-  future->task = NULL;
-  if (future->waiter)
-    future->waiter->descriptor->fn(future->waiter);
-}
-
 // * 10: coroutine in-function syntax
 #define co_return(OUT)                                                         \
   do {                                                                         \
@@ -351,7 +358,7 @@ co_fulfill(co_future_t *future) {
     if (_co_future) {                                                          \
       if (_co_out)                                                             \
         *_co_out = (typeof(*_co_out))OUT;                                      \
-      co_fulfill(_co_future);                                                  \
+      co_future_fulfill(_co_future);                                           \
     }                                                                          \
     _co_b->stage = _CO_DONE;                                                   \
     goto _co_l_done;                                                           \
@@ -388,7 +395,7 @@ co_fulfill(co_future_t *future) {
     _co_b->stage = _CO_DONE;                                                   \
     _co_b->do_cancel = false;                                                  \
     if (_co_future)                                                            \
-      co_fulfill(_co_future);                                                  \
+      co_future_fulfill(_co_future);                                           \
     goto _co_l_cleanup;                                                        \
   }                                                                            \
   if (_co_b->label) {                                                          \
@@ -423,9 +430,7 @@ _co_l_cleanup:                                                                 \
 
 static void __attribute__((unused))
 _co_await_prep(co_t *co, void *out, void *label) {
-  co->nested_future.waiter = co;
-  co->nested_future.ready = false;
-  co->nested_future.out = out;
+  co_future_init(&co->nested_future, co, out);
   co->label = label;
 }
 
@@ -434,8 +439,7 @@ _co_await_prep(co_t *co, void *out, void *label) {
 #define co_await(OUT, NAME, IN)                                                \
   do {                                                                         \
     _co_await_prep(_co_b, OUT, &&_co_label(__LINE__));                         \
-    co_launch(_co_b->loop, &_co_b->nested_future, &_co_b->nested_future.out,   \
-              NAME, IN);                                                       \
+    co_launch(_co_b->loop, &_co_b->nested_future, NAME, IN);                   \
     _co_return_guard.respectful = true;                                        \
     return;                                                                    \
   _co_label(__LINE__):;                                                        \
@@ -449,7 +453,7 @@ _co_await_prep(co_t *co, void *out, void *label) {
   do {                                                                         \
     __auto_type _co_h_or_r = HANDLE_OR_REQ;                                    \
     _co_await_prep(_co_b, OUT, &&_co_label(__LINE__));                         \
-    uv_##TYPE##__future_init(&_co_b->nested_future, _co_h_or_r);               \
+    uv_##TYPE##__future_adorn(&_co_b->nested_future, _co_h_or_r);              \
     _co_h_or_r->data = &_co_b->nested_future;                                  \
     co_status = _co_uv__##CALL(_co_b->loop, _co_h_or_r, ##__VA_ARGS__,         \
                                uv_##TYPE##__cb);                               \

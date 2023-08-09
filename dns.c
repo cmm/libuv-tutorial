@@ -82,7 +82,7 @@ void foo_co(co_t *co) {
 int main() {
   __auto_type loop = uv_default_loop();
 
-  co_launch(loop, NULL, NULL, foo, {});
+  co_launch(loop, NULL, foo, {});
   int ret = uv_run(loop, UV_RUN_DEFAULT);
   uv_loop_close(loop);
   return ret;
