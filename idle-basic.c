@@ -6,10 +6,9 @@ typedef struct {
   uv_idle_t idler;
   int64_t count;
 } idle_state_t;
-co_define(idle, co_future_t *, co_none_t, idle_state_t);
-void idle_co(co_t *co) {
-  co_begin(idle, co, parent_future, s);
-  uv_idle_init(co->loop, &s->idler);
+co(idle, co_future_t *, co_none_t, idle_state_t) {
+  co_begin(idle, parent_future, s);
+  uv_idle_init(co_loop, &s->idler);
   s->count = 0;
   do {
     uv_await(NULL, idle, &s->idler);
@@ -25,9 +24,8 @@ void idle_co(co_t *co) {
   co_cleanup_end;
 }
 
-co_define(idle_wrap, co_none_t, co_none_t, co_none_t);
-void idle_wrap_co(co_t *co) {
-  co_begin(idle_wrap, co, _, __);
+co(idle_wrap, co_none_t, co_none_t, co_none_t) {
+  co_begin(idle_wrap, _, __);
   co_await(NULL, idle, _co_future);
   printf("idle co done\n");
   co_end_with_cleanup({});

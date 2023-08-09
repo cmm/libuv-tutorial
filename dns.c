@@ -16,9 +16,8 @@ typedef struct {
   bool have_stream;
   uv_out_t uv;
 } state_t;
-co_define(foo, co_none_t, co_none_t, state_t);
-void foo_co(co_t *co) {
-  co_begin(foo, co, _, s);
+co(foo, co_none_t, co_none_t, state_t) {
+  co_begin(foo, _, s);
 
   static const struct addrinfo hints = {
     .ai_family = PF_INET,
@@ -41,7 +40,7 @@ void foo_co(co_t *co) {
   uv_ip4_name((struct sockaddr_in *)s->ai->ai_addr, addr, 16);
   fprintf(stderr, "%s\n", addr);
 
-  uv_tcp_init(co->loop, &s->socket);
+  uv_tcp_init(co_loop, &s->socket);
   uv_await(&s->uv.connect, tcp_connect, &s->connect_req, &s->socket, (const struct sockaddr *)s->ai->ai_addr);
   if (co_status || s->uv.connect.status < 0) {
     fprintf(stderr, "connect error\n");

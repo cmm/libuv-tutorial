@@ -272,10 +272,10 @@ int _co_cancel(void *co_) {
 }
 
 // * 8: coroutines, surface syntax
-#define co_declare(NAME, IN_TYPE, OUT_TYPE)                                    \
-  _co_declare(extern, extern const _co_descriptor_t NAME##__descriptor, NAME,  \
-              IN_TYPE, OUT_TYPE)
-#define _co_declare(LINKAGE, DESCRIPTOR_DECL, NAME, IN_TYPE, OUT_TYPE)         \
+#define co_interface(NAME, IN_TYPE, OUT_TYPE)                                  \
+  _co_interface(extern, extern const _co_descriptor_t NAME##__descriptor,      \
+                NAME, IN_TYPE, OUT_TYPE)
+#define _co_interface(LINKAGE, DESCRIPTOR_DECL, NAME, IN_TYPE, OUT_TYPE)       \
   typedef IN_TYPE NAME##__in_t;                                                \
   typedef OUT_TYPE NAME##_out_t;                                               \
   typedef struct {                                                             \
@@ -293,7 +293,7 @@ int _co_cancel(void *co_) {
     _co->base.descriptor->fn(&_co->base);                                      \
   }
 
-#define co_implement(NAME, STATE_TYPE)                                         \
+#define co_implementation(NAME, STATE_TYPE)                                    \
   typedef STATE_TYPE NAME##__state_t;                                          \
   typedef struct {                                                             \
     NAME##__public_t public;                                                   \
@@ -305,11 +305,12 @@ int _co_cancel(void *co_) {
     NAME##__private_t *_co = co_malloc(sizeof(NAME##__private_t));             \
     _co->public.base.descriptor = &NAME##__descriptor;                         \
     return &_co->public;                                                       \
-  }
+  } \
+  void NAME##_co(co_t *_co_b)
 
-#define co_define(NAME, IN_TYPE, OUT_TYPE, STATE_TYPE)                         \
-  _co_declare(static, , NAME, IN_TYPE, OUT_TYPE);                              \
-  co_implement(NAME, STATE_TYPE);
+#define co(NAME, IN_TYPE, OUT_TYPE, STATE_TYPE)                                \
+  _co_interface(static, , NAME, IN_TYPE, OUT_TYPE);                            \
+  co_implementation(NAME, STATE_TYPE)
 
 #define co_launch(LOOP, FUTURE, NAME, IN)                                      \
   do {                                                                         \
@@ -374,18 +375,20 @@ _co_check_stage(co_t *co, _co_stage_t expected, const char *file, int line) {
   _co_b->stage = _CO_DEAD;                                                     \
   goto _co_l_destroy;
 
+#define co_loop _co_b->loop
+
 #define co_bind(NAME, CO, IN_VAR, STATE_VAR)                                   \
-  __auto_type __attribute__((unused)) _co_b = CO;                              \
-  _co_check_descriptor(_co_b, &NAME##__descriptor,  __FILE__, __LINE__);       \
+  __auto_type __attribute__((unused)) _co_b_ = CO;                             \
+  _co_check_descriptor(_co_b_, &NAME##__descriptor,  __FILE__, __LINE__);      \
   __auto_type __attribute__((unused)) _co =                                    \
-      container_of(_co_b, NAME##__private_t, public.base);                     \
-  __auto_type _co_future = _co_b->future;                                      \
+      container_of(_co_b_, NAME##__private_t, public.base);                    \
+  __auto_type _co_future = _co_b_->future;                                     \
   __auto_type _co_out = (NAME##_out_t *)(_co_future ? _co_future->out : NULL); \
   __auto_type __attribute__((unused)) IN_VAR = &_co->public.in;                \
   __auto_type __attribute__((unused)) STATE_VAR = &_co->state
 
-#define co_begin(NAME, CO, IN_VAR, STATE_VAR)                                  \
-  co_bind(NAME, CO, IN_VAR, STATE_VAR);                                        \
+#define co_begin(NAME, IN_VAR, STATE_VAR)                                      \
+  co_bind(NAME, _co_b, IN_VAR, STATE_VAR);                                     \
   __attribute__((cleanup(_co_check_respectful_return)))                        \
   _co_respectful_return_guard_t _co_return_guard = {.func = __func__,          \
                                                     .respectful = false};      \
