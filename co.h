@@ -397,8 +397,6 @@ _co_check_stage(co_t *co, _co_stage_t expected, const char *file, int line) {
     _co_check_stage(_co_b, _CO_ACTIVE, __FILE__, __LINE__);                    \
     _co_b->stage = _CO_DONE;                                                   \
     _co_b->do_cancel = false;                                                  \
-    if (_co_future)                                                            \
-      co_future_fulfill(_co_future);                                           \
     goto _co_l_cleanup;                                                        \
   }                                                                            \
   if (_co_b->label) {                                                          \
@@ -414,6 +412,8 @@ _co_l_done:                                                                    \
 _co_l_destroy:                                                                 \
   _co_check_stage(_co_b, _CO_DEAD, __FILE__, __LINE__);                        \
   free(_co);                                                                   \
+  if (_co_future)                                                              \
+    co_future_fulfill(_co_future);                                             \
   _co_return_guard.respectful = true;                                          \
   return;                                                                      \
 _co_l_active: {
