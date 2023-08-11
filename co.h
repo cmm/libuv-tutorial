@@ -361,13 +361,13 @@ _co_check_stage(co_t *co, _co_stage_t expected, const char *file, int line) {
   }
 }
 
-#define _co_fulfill                                                            \
-  do {                                                                         \
-    if (_co_future) {                                                          \
-      _co_b->future_fulfilled = true;                                          \
-      co_future_fulfill(_co_future);                                           \
-    }                                                                          \
-  } while (false)
+static void __attribute__((unused))
+_co_fulfill(co_future_t *future, co_t *co) {
+  if (co)
+    co->future_fulfilled = true;
+  if (future)
+    co_future_fulfill(future);
+}
 
 // * 10: coroutine in-function syntax
 #define co_return(OUT)                                                         \
@@ -426,8 +426,7 @@ _co_l_done:                                                                    \
 _co_l_destroy:                                                                 \
   _co_check_stage(_co_b, _CO_DEAD, __FILE__, __LINE__);                        \
   free(_co);                                                                   \
-  if (_co_future)                                                              \
-    co_future_fulfill(_co_future);                                             \
+  _co_fulfill(_co_future, NULL);                                               \
   _co_return;                                                                  \
   return;                                                                      \
 _co_l_active: {
@@ -448,8 +447,8 @@ _co_l_cleanup:                                                                 \
 #define co_end_with_deferred_cleanup(OUT)                                      \
   }                                                                            \
   co_return(OUT);                                                              \
-_co_l_cleanup:                                                                 \
-  _co_fulfill;                                                                 \
+  _co_l_cleanup:                                                               \
+  _co_fulfill(_co_future, _co_b);                                              \
   _co_cleanup_begin
 
 static void __attribute__((unused))
