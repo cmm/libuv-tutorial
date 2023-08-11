@@ -36,7 +36,7 @@ co(idle_wrap, co_none_t, co_none_t, co_none_t) {
 int main() {
   __auto_type loop = uv_default_loop();
   printf("idling...\n");
-  co_future_t wrapper_future; co_future_init(&wrapper_future, NULL, NULL);
+  co_future_t wrapper_future; co_future_init(&wrapper_future, NULL, NULL, 0);
   co_launch(loop, &wrapper_future, idle_wrap, {});
   uv_run(loop, UV_RUN_DEFAULT);
   printf("cancelled: %d\n", wrapper_future.task == NULL);

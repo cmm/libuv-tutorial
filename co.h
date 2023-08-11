@@ -126,12 +126,13 @@ typedef int (co_cancel_fn_t)(void *);
 typedef struct {
   struct co *waiter;
   void *out;
+  size_t out_size;
   bool fulfilled;
   co_cancel_fn_t *cancel_fn;
   void *task;
 } co_future_t;
 
-static void co_future_init(co_future_t *, struct co *, void *);
+static void co_future_init(co_future_t *, struct co *, void *, size_t);
 static void co_future_fulfill(co_future_t *);
 
 typedef struct {} co_none_t;
@@ -198,9 +199,10 @@ typedef struct co {
 } co_t;
 
 static void __attribute__((unused))
-co_future_init(co_future_t *future, co_t *waiter, void *out) {
+co_future_init(co_future_t *future, co_t *waiter, void *out, size_t out_size) {
   future->waiter = waiter;
   future->out = out;
+  future->out_size = out_size;
   future->fulfilled = false;
   future->cancel_fn = NULL;
   future->task = NULL;
@@ -216,6 +218,15 @@ co_future_fulfill(co_future_t *future) {
     future->waiter->descriptor->fn(future->waiter);
 }
 
+static void __attribute__((unused))
+_co_future_check_out_size(co_future_t *future, size_t size,
+                          const char *file, int line) {
+  if (future->out_size < size) {
+    co_printf("%s:%d: out size too big: buffer: %lu, data: %lu\n",
+              file, line, future->out_size, size);
+  }
+}
+
 // * 6: UV types, the part where we do need to know about the
 //      coroutine structure so our callbacks can wake up coroutines
 #undef _co_define_uv_
@@ -224,8 +235,10 @@ co_future_fulfill(co_future_t *future) {
       HorR_TYPE, HorR_NAME, ##__VA_ARGS__) {                                   \
     __auto_type future_ = (co_future_t *)HorR_NAME->data;                      \
     if (future_->out) {                                                        \
-      *(uv_##TYPE##_out_t *)future_->out =                                     \
+      __auto_type out_ =                                                       \
           (uv_##TYPE##_out_t)_co_tn_initform(_, HorR_NAME, ##__VA_ARGS__);     \
+      _co_future_check_out_size(future_, sizeof out_, __FILE__, __LINE__);     \
+      *(uv_##TYPE##_out_t *)future_->out = out_;                               \
     }                                                                          \
     STOP(HorR_NAME);                                                           \
     co_future_fulfill(future_);                                                \
@@ -373,8 +386,11 @@ _co_fulfill(co_future_t *future, co_t *co) {
 #define co_return(OUT)                                                         \
   do {                                                                         \
     _co_check_stage(_co_b, _CO_ACTIVE, __FILE__, __LINE__);                    \
-    if (_co_out)                                                               \
-      *_co_out = (typeof(*_co_out))OUT;                                        \
+    if (_co_out) {                                                             \
+      __auto_type out_ = (typeof(*_co_out))OUT;                                \
+      _co_future_check_out_size(_co_future, sizeof out_, __FILE__, __LINE__);  \
+      *_co_out = out_;                                                         \
+    }                                                                          \
     _co_b->stage = _CO_DONE;                                                   \
     goto _co_l_done;                                                           \
   } while (false)
@@ -452,8 +468,8 @@ _co_l_cleanup:                                                                 \
   _co_cleanup_begin
 
 static void __attribute__((unused))
-_co_await_prep(co_t *co, void *out, void *label) {
-  co_future_init(&co->nested_future, co, out);
+_co_await_prep(co_t *co, void *out, size_t size, void *label) {
+  co_future_init(&co->nested_future, co, out, size);
   co->label = label;
 }
 
@@ -461,7 +477,7 @@ _co_await_prep(co_t *co, void *out, void *label) {
 
 #define co_await(OUT, NAME, IN)                                                \
   do {                                                                         \
-    _co_await_prep(_co_b, OUT, &&_co_label(__LINE__));                         \
+    _co_await_prep(_co_b, OUT, sizeof(NAME##_out_t), &&_co_label(__LINE__));   \
     co_launch(_co_b->loop, &_co_b->nested_future, NAME, IN);                   \
     _co_return;                                                                \
   _co_label(__LINE__):;                                                        \
@@ -474,7 +490,8 @@ _co_await_prep(co_t *co, void *out, void *label) {
 #define _uv_await_(OUT, CALL, TYPE, HANDLE_OR_REQ, ...)                        \
   do {                                                                         \
     __auto_type _co_h_or_r = HANDLE_OR_REQ;                                    \
-    _co_await_prep(_co_b, OUT, &&_co_label(__LINE__));                         \
+    _co_await_prep(_co_b, OUT, sizeof(uv_##TYPE##_out_t),                      \
+                   &&_co_label(__LINE__));                                     \
     uv_##TYPE##__future_adorn(&_co_b->nested_future, _co_h_or_r);              \
     _co_h_or_r->data = &_co_b->nested_future;                                  \
     co_status = _co_uv__##CALL(_co_b->loop, _co_h_or_r, ##__VA_ARGS__,         \
@@ -483,7 +500,7 @@ _co_await_prep(co_t *co, void *out, void *label) {
       /* all good, uv will call us back */                                     \
       _co_return;                                                              \
     }                                                                          \
-  _co_label(__LINE__):;                                                        \
+  _co_label(__LINE__) :;                                                       \
   } while (false)
 
 // * 11: UV API wrappers
