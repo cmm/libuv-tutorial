@@ -17,7 +17,7 @@ co(idle, co_future_t *, co_none_t, idle_state_t) {
       co_cancel(*parent_future);
   } while (++s->count < 10);
 
-  co_end_with_cleanup({});
+  co_end_with_deferred_cleanup({});
   printf("idle co cleaning up\n");
   uv_await(NULL, close, (uv_handle_t *)&s->idler);
   printf("idle co done cleaning up\n");

@@ -126,7 +126,7 @@ typedef int (co_cancel_fn_t)(void *);
 typedef struct {
   struct co *waiter;
   void *out;
-  bool ready;
+  bool fulfilled;
   co_cancel_fn_t *cancel_fn;
   void *task;
 } co_future_t;
@@ -187,6 +187,7 @@ typedef struct co {
   co_future_t *future;
   uv_loop_t *loop;
   bool do_cancel;
+  bool future_fulfilled;
   _co_stage_t stage;
   void *label;
   co_future_t nested_future;
@@ -200,14 +201,16 @@ static void __attribute__((unused))
 co_future_init(co_future_t *future, co_t *waiter, void *out) {
   future->waiter = waiter;
   future->out = out;
-  future->ready = false;
+  future->fulfilled = false;
   future->cancel_fn = NULL;
   future->task = NULL;
 }
 
 static void __attribute__((unused))
 co_future_fulfill(co_future_t *future) {
-  future->ready = true;
+  if (future->fulfilled)
+    return;
+  future->fulfilled = true;
   future->task = NULL;
   if (future->waiter)
     future->waiter->descriptor->fn(future->waiter);
@@ -242,7 +245,7 @@ static void __attribute__((unused))
 _co_init(co_t *co, co_future_t *future, uv_loop_t *loop) {
   co->future = future;
   co->loop = loop;
-  co->do_cancel = false;
+  co->do_cancel = co->future_fulfilled = false;
   co->stage = _CO_LARVA;
   co->label = NULL;
   if (future) {
@@ -265,7 +268,7 @@ int _co_cancel(void *co_) {
   __auto_type co = (co_t *)co_;
   if (co->do_cancel || co->stage > _CO_ACTIVE)
     return 0;
-  if (!co->nested_future.ready)
+  if (!co->nested_future.fulfilled)
     co_cancel(&co->nested_future);
   co->do_cancel = true;
   return 0;
@@ -333,6 +336,12 @@ _co_check_respectful_return(_co_respectful_return_guard_t *returning) {
   }
 }
 
+#define _co_return                                                             \
+  do {                                                                         \
+    _co_return_guard.respectful = true;                                        \
+    return;                                                                    \
+  } while (false)
+
 static void __attribute__((unused))
 _co_check_descriptor(co_t *co, const _co_descriptor_t *descriptor,
                      const char *file, int line) {
@@ -352,15 +361,20 @@ _co_check_stage(co_t *co, _co_stage_t expected, const char *file, int line) {
   }
 }
 
+#define _co_fulfill                                                            \
+  do {                                                                         \
+    if (_co_future) {                                                          \
+      _co_b->future_fulfilled = true;                                          \
+      co_future_fulfill(_co_future);                                           \
+    }                                                                          \
+  } while (false)
+
 // * 10: coroutine in-function syntax
 #define co_return(OUT)                                                         \
   do {                                                                         \
     _co_check_stage(_co_b, _CO_ACTIVE, __FILE__, __LINE__);                    \
-    if (_co_future) {                                                          \
-      if (_co_out)                                                             \
-        *_co_out = (typeof(*_co_out))OUT;                                      \
-      co_future_fulfill(_co_future);                                           \
-    }                                                                          \
+    if (_co_out)                                                               \
+      *_co_out = (typeof(*_co_out))OUT;                                        \
     _co_b->stage = _CO_DONE;                                                   \
     goto _co_l_done;                                                           \
   } while (false)
@@ -382,7 +396,7 @@ _co_check_stage(co_t *co, _co_stage_t expected, const char *file, int line) {
   _co_check_descriptor(_co_b_, &NAME##__descriptor,  __FILE__, __LINE__);      \
   __auto_type __attribute__((unused)) _co =                                    \
       container_of(_co_b_, NAME##__private_t, public.base);                    \
-  __auto_type _co_future = _co_b_->future;                                     \
+  __auto_type _co_future = _co_b->future_fulfilled ? NULL : _co_b_->future;    \
   __auto_type _co_out = (NAME##_out_t *)(_co_future ? _co_future->out : NULL); \
   __auto_type __attribute__((unused)) IN_VAR = &_co->public.in;                \
   __auto_type __attribute__((unused)) STATE_VAR = &_co->state
@@ -414,7 +428,7 @@ _co_l_destroy:                                                                 \
   free(_co);                                                                   \
   if (_co_future)                                                              \
     co_future_fulfill(_co_future);                                             \
-  _co_return_guard.respectful = true;                                          \
+  _co_return;                                                                  \
   return;                                                                      \
 _co_l_active: {
 
@@ -431,6 +445,13 @@ _co_l_cleanup:                                                                 \
 _co_l_cleanup:                                                                 \
   _co_cleanup_begin
 
+#define co_end_with_deferred_cleanup(OUT)                                      \
+  }                                                                            \
+  co_return(OUT);                                                              \
+_co_l_cleanup:                                                                 \
+  _co_fulfill;                                                                 \
+  _co_cleanup_begin
+
 static void __attribute__((unused))
 _co_await_prep(co_t *co, void *out, void *label) {
   co_future_init(&co->nested_future, co, out);
@@ -443,8 +464,7 @@ _co_await_prep(co_t *co, void *out, void *label) {
   do {                                                                         \
     _co_await_prep(_co_b, OUT, &&_co_label(__LINE__));                         \
     co_launch(_co_b->loop, &_co_b->nested_future, NAME, IN);                   \
-    _co_return_guard.respectful = true;                                        \
-    return;                                                                    \
+    _co_return;                                                                \
   _co_label(__LINE__):;                                                        \
   } while (false)
 
@@ -462,8 +482,7 @@ _co_await_prep(co_t *co, void *out, void *label) {
                                uv_##TYPE##__cb);                               \
     if (co_status == 0) {                                                      \
       /* all good, uv will call us back */                                     \
-      _co_return_guard.respectful = true;                                      \
-      return;                                                                  \
+      _co_return;                                                              \
     }                                                                          \
   _co_label(__LINE__):;                                                        \
   } while (false)
