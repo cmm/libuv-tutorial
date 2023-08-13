@@ -40,14 +40,7 @@ void *co_realloc(void *p, size_t size) {
 }
 #endif
 
-// * 1: utilities
-#ifndef container_of
-#define container_of(ptr, type, member)                                        \
-  ({                                                                           \
-    const typeof(((type *)0)->member) *__mptr = (ptr);                         \
-    (type *)((char *)__mptr - offsetof(type, member));                         \
-  })
-#endif
+// * 1: other utilities
 
 // * 2: horrible macro helpers
 #define _co_count(...)                                                         \
@@ -121,15 +114,19 @@ void *co_realloc(void *p, size_t size) {
 
 // * 3: the future type & friends
 struct co;
-typedef int (co_cancel_fn_t)(void *);
+struct co_future;
+typedef int (co_cancel_fn_t)(struct co_future *);
 
-typedef struct {
-  struct co *waiter;
-  void *out;
-  size_t out_size;
-  bool fulfilled;
-  co_cancel_fn_t *cancel_fn;
-  void *task;
+#define _co_future_fields(OUT_TYPE)                                            \
+  struct co *awaiter;                                                          \
+  OUT_TYPE *out;                                                               \
+  size_t out_size;                                                             \
+  co_cancel_fn_t *cancel_fn;                                                   \
+  void *task;                                                                  \
+  bool fulfilled
+
+typedef struct co_future {
+  _co_future_fields(void);
 } co_future_t;
 
 static void co_future_init(co_future_t *, struct co *, void *, size_t);
@@ -146,9 +143,14 @@ typedef struct {} co_none_t;
 #define _co_define_uv_stoppable(TYPE, ...)                                     \
   _co_define_uv_(TYPE, _co_uv_nada, uv_##TYPE##_stop, ##__VA_ARGS__)
 
+static int __attribute__((unused))
+_co_uv_cancel(co_future_t *future) {
+  return uv_cancel((uv_req_t *)future->task);
+}
+
 #define _co_uv_cancellable(FUTURE)                                             \
   do {                                                                         \
-    FUTURE->cancel_fn = (co_cancel_fn_t *)uv_cancel;                           \
+    FUTURE->cancel_fn = _co_uv_cancel;                                         \
   } while (false)
 #define _co_uv_nada(...) (void)0
 
@@ -183,24 +185,26 @@ static const char *_co_stage_str[] = {
   _co_stages(_co_string_and_comma)
 };
 
+#define _co_fields(NAME)                                                       \
+  const _co_descriptor_t *descriptor;                                          \
+  NAME##_future_t *future;                                                     \
+  uv_loop_t *loop;                                                             \
+  void *label;                                                                 \
+  co_future_t nested_future;                                                   \
+  union {                                                                      \
+    uv_buf_t buf;                                                              \
+  } stash;                                                                     \
+  bool do_cancel : 1;                                                          \
+  bool future_fulfilled : 1;                                                   \
+  _co_stage_t stage : 4
+
 typedef struct co {
-  const _co_descriptor_t *descriptor;
-  co_future_t *future;
-  uv_loop_t *loop;
-  bool do_cancel;
-  bool future_fulfilled;
-  _co_stage_t stage;
-  void *label;
-  co_future_t nested_future;
-  // hacks go here
-  union {
-    uv_buf_t buf;
-  } stash;
+  _co_fields(co);
 } co_t;
 
 static void __attribute__((unused))
-co_future_init(co_future_t *future, co_t *waiter, void *out, size_t out_size) {
-  future->waiter = waiter;
+co_future_init(co_future_t *future, co_t *awaiter, void *out, size_t out_size) {
+  future->awaiter = awaiter;
   future->out = out;
   future->out_size = out_size;
   future->fulfilled = false;
@@ -214,8 +218,8 @@ co_future_fulfill(co_future_t *future) {
     return;
   future->fulfilled = true;
   future->task = NULL;
-  if (future->waiter)
-    future->waiter->descriptor->fn(future->waiter);
+  if (future->awaiter)
+    future->awaiter->descriptor->fn(future->awaiter);
 }
 
 static void __attribute__((unused))
@@ -253,7 +257,8 @@ typedef union {
 } uv_out_t;
 
 // * 7: coroutine & future utilities
-static int _co_cancel(void *);
+static int _co_cancel(co_future_t *);
+
 static void __attribute__((unused))
 _co_init(co_t *co, co_future_t *future, uv_loop_t *loop) {
   co->future = future;
@@ -272,13 +277,13 @@ void co_cancel(co_future_t *future) {
   if (!future || !future->task)
     return;
   if (future->cancel_fn)
-    (void)future->cancel_fn(future->task);
+    (void)future->cancel_fn(future);
   future->task = NULL;
 }
 
 static __attribute__((unused))
-int _co_cancel(void *co_) {
-  __auto_type co = (co_t *)co_;
+int _co_cancel(co_future_t *future) {
+  __auto_type co = (co_t *)future->task;
   if (co->do_cancel || co->stage > _CO_ACTIVE)
     return 0;
   if (!co->nested_future.fulfilled)
@@ -288,6 +293,13 @@ int _co_cancel(void *co_) {
 }
 
 // * 8: coroutines, surface syntax
+#define _co_interface_fields(NAME)                                             \
+  _co_fields(NAME);                                                            \
+  NAME##__in_t in
+#define _co_implementation_fields(NAME)                                        \
+  _co_interface_fields(NAME);                                                  \
+  NAME##__state_t state
+
 #define co_interface(NAME, IN_TYPE, OUT_TYPE)                                  \
   _co_interface(extern, extern const _co_descriptor_t NAME##__descriptor,      \
                 NAME, IN_TYPE, OUT_TYPE)
@@ -295,34 +307,36 @@ int _co_cancel(void *co_) {
   typedef IN_TYPE NAME##__in_t;                                                \
   typedef OUT_TYPE NAME##_out_t;                                               \
   typedef struct {                                                             \
-    co_t base;                                                                 \
-    NAME##__in_t in;                                                           \
-  } NAME##__public_t;                                                          \
-  LINKAGE NAME##__public_t *NAME##__new(void);                                 \
-  LINKAGE void NAME##_co(co_t *);                                              \
+    _co_future_fields(NAME##_out_t);                                           \
+  } NAME##_future_t;                                                           \
+  typedef struct {                                                             \
+    _co_interface_fields(NAME);                                                \
+  } NAME##__interface_t;                                                       \
+  typedef struct NAME NAME##_t;                                                \
+  LINKAGE NAME##__interface_t *NAME##__new(void);                              \
+  LINKAGE void NAME##_co(NAME##_t *);                                          \
   DESCRIPTOR_DECL;                                                             \
   static void __attribute__((unused))                                          \
-  NAME##__launch(uv_loop_t *loop, co_future_t *future, IN_TYPE in) {           \
-    NAME##__public_t *_co = NAME##__new();                                     \
-    _co_init(&_co->base, future, loop);                                        \
+  NAME##__launch(uv_loop_t *loop, NAME##_future_t *future, IN_TYPE in) {       \
+    __auto_type _co = NAME##__new();                                           \
+    _co_init((co_t *)_co, (co_future_t *)future, loop);                        \
     _co->in = in;                                                              \
-    _co->base.descriptor->fn(&_co->base);                                      \
+    _co->descriptor->fn((co_t *)_co);                                          \
   }
 
 #define co_implementation(NAME, STATE_TYPE)                                    \
   typedef STATE_TYPE NAME##__state_t;                                          \
-  typedef struct {                                                             \
-    NAME##__public_t public;                                                   \
-    NAME##__state_t state;                                                     \
-  } NAME##__private_t;                                                         \
+  typedef struct NAME {                                                        \
+    _co_implementation_fields(NAME);                                           \
+  } NAME##_t;                                                                  \
   const _co_descriptor_t NAME##__descriptor = {.name = #NAME,                  \
-                                               .fn = NAME##_co};               \
-  NAME##__public_t *NAME##__new(void) {                                        \
-    NAME##__private_t *_co = co_malloc(sizeof(NAME##__private_t));             \
-    _co->public.base.descriptor = &NAME##__descriptor;                         \
-    return &_co->public;                                                       \
-  } \
-  void NAME##_co(co_t *_co_b)
+                                               .fn = (co_fn_t *)NAME##_co};    \
+  NAME##__interface_t *NAME##__new(void) {                                     \
+    NAME##__interface_t *_co = co_malloc(sizeof(NAME##_t));                    \
+    _co->descriptor = &NAME##__descriptor;                                     \
+    return _co;                                                                \
+  }                                                                            \
+  void NAME##_co(NAME##_t *_co)
 
 #define co(NAME, IN_TYPE, OUT_TYPE, STATE_TYPE)                                \
   _co_interface(static, , NAME, IN_TYPE, OUT_TYPE);                            \
@@ -331,7 +345,7 @@ int _co_cancel(void *co_) {
 #define co_launch(LOOP, FUTURE, NAME, IN)                                      \
   do {                                                                         \
     NAME##__in_t in_ = IN;                                                     \
-    NAME##__launch(LOOP, FUTURE, in_);                                         \
+    NAME##__launch(LOOP, (NAME##_future_t *)FUTURE, in_);                      \
   } while (false)
 
 // * 9: coroutines, inner syntax support things
@@ -365,8 +379,10 @@ _co_check_descriptor(co_t *co, const _co_descriptor_t *descriptor,
   }
 }
 
+#define _co_check_stage(CO, EXPECTED)                                          \
+  _co_check_stage_((co_t *)(CO), EXPECTED, __FILE__, __LINE__)
 static void __attribute__((unused))
-_co_check_stage(co_t *co, _co_stage_t expected, const char *file, int line) {
+_co_check_stage_(co_t *co, _co_stage_t expected, const char *file, int line) {
   if (co->stage != expected) {
     co_printf("%s:%d: wrong stage (expected: %s, actual: %s)\n",
               file, line, _co_stage_str[expected], _co_stage_str[co->stage]);
@@ -385,64 +401,63 @@ _co_fulfill(co_future_t *future, co_t *co) {
 // * 10: coroutine in-function syntax
 #define co_return(OUT)                                                         \
   do {                                                                         \
-    _co_check_stage(_co_b, _CO_ACTIVE, __FILE__, __LINE__);                    \
+    _co_check_stage(_co, _CO_ACTIVE);                                          \
     if (_co_out) {                                                             \
-      __auto_type out_ = (typeof(*_co_out))OUT;                                \
-      _co_future_check_out_size(_co_future, sizeof out_, __FILE__, __LINE__);  \
+      typeof(*_co_out) out_ = OUT;                                             \
+      _co_future_check_out_size((co_future_t *)_co_future, sizeof out_,        \
+                                __FILE__, __LINE__);                           \
       *_co_out = out_;                                                         \
     }                                                                          \
-    _co_b->stage = _CO_DONE;                                                   \
+    _co->stage = _CO_DONE;                                                     \
     goto _co_l_done;                                                           \
   } while (false)
 
 #define _co_cleanup_begin                                                      \
-  _co_check_stage(_co_b, _CO_DONE, __FILE__, __LINE__);                        \
-  _co_b->stage = _CO_CLEANUP;                                                  \
+  _co_check_stage(_co, _CO_DONE);                                              \
+  _co->stage = _CO_CLEANUP;                                                    \
   {
 #define co_cleanup_end                                                         \
   }                                                                            \
-  _co_check_stage(_co_b, _CO_CLEANUP, __FILE__, __LINE__);                     \
-  _co_b->stage = _CO_DEAD;                                                     \
+  _co_check_stage(_co, _CO_CLEANUP);                                           \
+  _co->stage = _CO_DEAD;                                                       \
   goto _co_l_destroy;
 
-#define co_loop _co_b->loop
+#define co_loop _co->loop
 
-#define co_bind(NAME, CO, IN_VAR, STATE_VAR)                                   \
-  __auto_type __attribute__((unused)) _co_b_ = CO;                             \
-  _co_check_descriptor(_co_b_, &NAME##__descriptor,  __FILE__, __LINE__);      \
-  __auto_type __attribute__((unused)) _co =                                    \
-      container_of(_co_b_, NAME##__private_t, public.base);                    \
-  __auto_type _co_future = _co_b->future_fulfilled ? NULL : _co_b_->future;    \
-  __auto_type _co_out = (NAME##_out_t *)(_co_future ? _co_future->out : NULL); \
-  __auto_type __attribute__((unused)) IN_VAR = &_co->public.in;                \
-  __auto_type __attribute__((unused)) STATE_VAR = &_co->state
+#define co_bind(CO, IN_VAR, STATE_VAR)                                         \
+  __auto_type _co_ = CO;                                                       \
+  __auto_type _co_future = _co_->future_fulfilled ? NULL : _co_->future;       \
+  typeof(_co_future->out) __attribute__((unused)) _co_out =                    \
+      _co_future ? _co_future->out : NULL;                                     \
+  __auto_type __attribute__((unused)) IN_VAR = &_co_->in;                      \
+  __auto_type __attribute__((unused)) STATE_VAR = &_co_->state
 
-#define co_begin(NAME, IN_VAR, STATE_VAR)                                      \
-  co_bind(NAME, _co_b, IN_VAR, STATE_VAR);                                     \
+#define co_begin(IN_VAR, STATE_VAR)                                            \
+  co_bind(_co, IN_VAR, STATE_VAR);                                             \
   __attribute__((cleanup(_co_check_respectful_return)))                        \
   _co_respectful_return_guard_t _co_return_guard = {.func = __func__,          \
                                                     .respectful = false};      \
   int __attribute__((unused)) co_status = 0;                                   \
-  if (_co_b->do_cancel) {                                                      \
-    _co_check_stage(_co_b, _CO_ACTIVE, __FILE__, __LINE__);                    \
-    _co_b->stage = _CO_DONE;                                                   \
-    _co_b->do_cancel = false;                                                  \
+  if (_co->do_cancel) {                                                        \
+    _co_check_stage(_co, _CO_ACTIVE);                                          \
+    _co->stage = _CO_DONE;                                                     \
+    _co->do_cancel = false;                                                    \
     goto _co_l_cleanup;                                                        \
   }                                                                            \
-  if (_co_b->label) {                                                          \
-    goto * _co_b->label;                                                       \
+  if (_co->label) {                                                            \
+    goto *_co->label;                                                          \
   } else {                                                                     \
-    _co_check_stage(_co_b, _CO_LARVA, __FILE__, __LINE__);                     \
-    _co_b->stage = _CO_ACTIVE;                                                 \
+    _co_check_stage(_co, _CO_LARVA);                                           \
+    _co->stage = _CO_ACTIVE;                                                   \
     goto _co_l_active;                                                         \
   }                                                                            \
 _co_l_done:                                                                    \
-  _co_check_stage(_co_b, _CO_DONE, __FILE__, __LINE__);                        \
+  _co_check_stage(_co, _CO_DONE);                                              \
   goto _co_l_cleanup;                                                          \
 _co_l_destroy:                                                                 \
-  _co_check_stage(_co_b, _CO_DEAD, __FILE__, __LINE__);                        \
+  _co_check_stage(_co, _CO_DEAD);                                              \
   free(_co);                                                                   \
-  _co_fulfill(_co_future, NULL);                                               \
+  _co_fulfill((co_future_t *)_co_future, NULL);                                \
   _co_return;                                                                  \
   return;                                                                      \
 _co_l_active: {
@@ -463,8 +478,8 @@ _co_l_cleanup:                                                                 \
 #define co_end_with_deferred_cleanup(OUT)                                      \
   }                                                                            \
   co_return(OUT);                                                              \
-  _co_l_cleanup:                                                               \
-  _co_fulfill(_co_future, _co_b);                                              \
+_co_l_cleanup:                                                                 \
+  _co_fulfill((co_future_t *)_co_future, (co_t *)_co);                         \
   _co_cleanup_begin
 
 static void __attribute__((unused))
@@ -477,8 +492,9 @@ _co_await_prep(co_t *co, void *out, size_t size, void *label) {
 
 #define co_await(OUT, NAME, IN)                                                \
   do {                                                                         \
-    _co_await_prep(_co_b, OUT, sizeof(NAME##_out_t), &&_co_label(__LINE__));   \
-    co_launch(_co_b->loop, &_co_b->nested_future, NAME, IN);                   \
+    _co_await_prep((co_t *)_co, OUT, sizeof(NAME##_out_t),                     \
+                   &&_co_label(__LINE__));                                     \
+    co_launch(_co->loop, &_co->nested_future, NAME, IN);                       \
     _co_return;                                                                \
   _co_label(__LINE__):;                                                        \
   } while (false)
@@ -490,24 +506,24 @@ _co_await_prep(co_t *co, void *out, size_t size, void *label) {
 #define _uv_await_(OUT, CALL, TYPE, HANDLE_OR_REQ, ...)                        \
   do {                                                                         \
     __auto_type _co_h_or_r = HANDLE_OR_REQ;                                    \
-    _co_await_prep(_co_b, OUT, sizeof(uv_##TYPE##_out_t),                      \
+    _co_await_prep((co_t *)_co, OUT, sizeof(uv_##TYPE##_out_t),                \
                    &&_co_label(__LINE__));                                     \
-    uv_##TYPE##__future_adorn(&_co_b->nested_future, _co_h_or_r);              \
-    _co_h_or_r->data = &_co_b->nested_future;                                  \
-    co_status = _co_uv__##CALL(_co_b->loop, _co_h_or_r, ##__VA_ARGS__,         \
+    uv_##TYPE##__future_adorn(&_co->nested_future, _co_h_or_r);                \
+    _co_h_or_r->data = &_co->nested_future;                                    \
+    co_status = _co_uv__##CALL(_co->loop, _co_h_or_r, ##__VA_ARGS__,           \
                                uv_##TYPE##__cb);                               \
     if (co_status == 0) {                                                      \
       /* all good, uv will call us back */                                     \
       _co_return;                                                              \
     }                                                                          \
-  _co_label(__LINE__) :;                                                       \
+  _co_label(__LINE__):;                                                        \
   } while (false)
 
 // * 11: UV API wrappers
 static __attribute__((unused))
 void _co_uv_get_stashed_buf(uv_handle_t *handle, size_t, uv_buf_t *buf) {
   __auto_type future = (co_future_t *)handle->data;
-  *buf = future->waiter->stash.buf;
+  *buf = future->awaiter->stash.buf;
 }
 
 #define _co_uv_wrapper(NAME)                                    \
@@ -545,7 +561,7 @@ static inline __attribute__((unused))
 int _co_uv__read(uv_loop_t *, uv_stream_t *stream, uv_buf_t buf,
                  uv_read_cb cb) {
   __auto_type future = (co_future_t *)stream->data;
-  future->waiter->stash.buf = buf;
+  future->awaiter->stash.buf = buf;
   return uv_read_start(stream, _co_uv_get_stashed_buf, cb);
 }
 #define _co_uv_type__read read
@@ -578,7 +594,7 @@ static inline __attribute__((unused))
 int _co_uv__udp_recv(uv_loop_t *, uv_udp_t *handle, uv_buf_t buf,
                      uv_udp_recv_cb cb) {
   __auto_type future = (co_future_t *)handle->data;
-  future->waiter->stash.buf = buf;
+  future->awaiter->stash.buf = buf;
   return uv_udp_recv_start(handle, _co_uv_get_stashed_buf, cb);
 }
 #define _co_uv_type__udp_recv udp_recv

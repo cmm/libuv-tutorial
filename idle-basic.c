@@ -7,7 +7,7 @@ typedef struct {
   int64_t count;
 } idle_state_t;
 co(idle, co_future_t *, co_none_t, idle_state_t) {
-  co_begin(idle, parent_future, s);
+  co_begin(parent_future, s);
   uv_idle_init(co_loop, &s->idler);
   s->count = 0;
   do {
@@ -25,8 +25,8 @@ co(idle, co_future_t *, co_none_t, idle_state_t) {
 }
 
 co(idle_wrap, co_none_t, co_none_t, co_none_t) {
-  co_begin(idle_wrap, _, __);
-  co_await(NULL, idle, _co_future);
+  co_begin(_, __);
+  co_await(NULL, idle, (co_future_t *)_co_future);
   printf("idle co done\n");
   co_end_with_cleanup({});
   printf("idle_wrap would clean up if it needed to\n");
@@ -36,8 +36,12 @@ co(idle_wrap, co_none_t, co_none_t, co_none_t) {
 int main() {
   __auto_type loop = uv_default_loop();
   printf("idling...\n");
-  co_future_t wrapper_future; co_future_init(&wrapper_future, NULL, NULL, 0);
+
+  idle_wrap_future_t wrapper_future;
+  co_future_init((co_future_t *)&wrapper_future, NULL, NULL, 0);
+
   co_launch(loop, &wrapper_future, idle_wrap, {});
+
   uv_run(loop, UV_RUN_DEFAULT);
   printf("cancelled: %d\n", wrapper_future.task == NULL);
   uv_loop_close(loop);

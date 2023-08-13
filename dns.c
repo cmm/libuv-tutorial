@@ -17,7 +17,7 @@ typedef struct {
   uv_out_t uv;
 } state_t;
 co(foo, co_none_t, co_none_t, state_t) {
-  co_begin(foo, _, s);
+  co_begin(_, s);
 
   static const struct addrinfo hints = {
     .ai_family = PF_INET,

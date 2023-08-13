@@ -17,7 +17,7 @@ typedef struct {
   uv_out_t uv;
 } stuff_state_t;
 co(do_stuff, co_none_t, co_none_t, stuff_state_t) {
-  co_begin(do_stuff, _, s);
+  co_begin(_, s);
   while (true) {
     s->buf = uv_buf_init(buffer, 1024);
     uv_await(&s->uv.fs, fs_read, &stdin_watcher, 0, &s->buf, 1, -1);
@@ -33,7 +33,7 @@ co(do_stuff, co_none_t, co_none_t, stuff_state_t) {
 }
 
 co(idle, co_none_t, co_none_t, co_none_t) {
-  co_begin(idle, _, __);
+  co_begin(_, __);
   while (true) {
     uv_await(NULL, idle, &idler);
     crunch_away();

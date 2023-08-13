@@ -41,6 +41,8 @@ though, sad (uh, thankfully no).
 * DONE uv cancellation & closing
 Those themselves have to be async and they are on the cleanup path,
 argh
+* DONE try passing full state, not base
+mostly just to avoid spelling out the coro name in co_begin().
 * TODO the listen situation
 not only does it fire the callback multiple times with no way to cork,
 it is not quite clear how to put any backpressure on it.  I guess the
